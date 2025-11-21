@@ -1,0 +1,20 @@
+{
+  "short_name": "VAIS",
+  "name": "VAIS LiveTalk",
+  "icons": [
+    {
+      "src": "icon-192x192.png",
+      "type": "image/png",
+      "sizes": "192x192"
+    },
+    {
+      "src": "icon-512x512.png",
+      "type": "image/png",
+      "sizes": "512x512"
+    }
+  ],
+  "start_url": ".",
+  "display": "standalone",
+  "theme_color": "#1975ff",
+  "background_color": "#f2f5f9"
+}

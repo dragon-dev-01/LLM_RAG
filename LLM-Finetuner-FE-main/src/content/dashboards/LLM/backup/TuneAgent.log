@@ -1,0 +1,1227 @@
+/* eslint-disable react/jsx-max-props-per-line */
+import React, { useEffect, useState, useRef, ChangeEvent } from 'react';
+import { Helmet } from 'react-helmet-async';
+import { useSearchParams } from 'react-router-dom';
+import {
+  Grid, Divider, Container, Card, Box, useTheme, Checkbox, CardHeader,
+  Button, TextField, IconButton, Collapse, Typography, CardContent,
+  MenuItem, FormControlLabel, CircularProgress, List, ListItem, ListItemText, Avatar,
+  Table, TableHead, TableRow, TableCell, TableBody, TableContainer
+} from '@mui/material';
+import {
+  ExpandMore as ExpandMoreIcon,
+  ExpandLess as ExpandLessIcon,
+  PlayArrow as PlayArrowIcon,
+  Settings,
+  Tune,
+  Layers,
+  Close as CloseIcon,
+  Info as InfoIcon,
+  PersonOutline as PersonOutlineIcon,
+  Business as BusinessIcon,
+  Rule as RuleIcon
+} from '@mui/icons-material';
+import TextareaAutosize from '@mui/material/TextareaAutosize';
+
+import PageTitleWrapper from 'src/components/PageTitleWrapper';
+import Footer from 'src/components/Footer';
+import PageHeader from './components/PageHeader';
+import TabsContainerWrapper from './components/TabsContainerWrapper';
+
+function AgentLLM() {
+  const theme = useTheme();
+  const API_HOST = process.env.REACT_APP_API_HOST;
+  const POD_API_HOST = (id: string) => `https://${id}.proxy.runpod.net`;
+  const [searchParams] = useSearchParams();
+  const [user, setUser] = useState<{ email: string } | null>(null);
+  const [retrainFlag, setRetrainFlag] = useState('');
+  const queryModelId = searchParams.get('model_id') || '';
+  const podCastIDRef = useRef('');
+  const [podCastID, setPodCastID] = useState('');
+  const dotIntervalRef = useRef<NodeJS.Timeout|null>(null);
+  const pollingIntervalRef = useRef<NodeJS.Timeout|null>(null);
+
+  // Roles
+  type Role = 'user' | 'agent';
+
+  interface ChatMessage {
+    role: Role;
+    content: string;
+  }
+  interface Conversation {
+    id: number;
+    title: string;
+    messages: ChatMessage[];
+  }
+
+  const [conversations, setConversations] = useState<Conversation[]>([
+    {
+      id: 1,
+      title: 'Conv #1',
+      messages: []
+    }
+  ]);
+  const [selectedConvId, setSelectedConvId] = useState<number>(1);
+
+  const [currentSpeaker, setCurrentSpeaker] = useState<Role>('user');
+  const [typedMessage, setTypedMessage] = useState('');
+
+  const [editingMessageId, setEditingMessageId] = useState<number | null>(null);
+  const [editingText, setEditingText] = useState('');
+
+  // Model settings
+  const [modelName, setModelName] = useState('');
+  const [baseModel, setBaseModel] = useState('Qwen2.5-7B');
+  const [description, setDescription] = useState('');
+  const [showAdvanced, setShowAdvanced] = useState(false);
+  const [showSystemPrompt, setShowSystemPrompt] = useState(false);
+
+  // Finetuning
+  const [isFinetuning, setIsFinetuning] = useState(false);
+  const [logMessage, setLogMessage] = useState('');
+  const [logs, setLogs] = useState<string[]>([]);
+  const [startStreaming, setStartStreaming] = useState(false);
+  const [isDownloading, setIsDownloading] = useState(false);
+  const [dotCount, setDotCount] = useState(2);
+
+  // Hyperparams
+  const [epoch, setEpoch] = useState(10);
+  const [learningRate, setLearningRate] = useState(0.00001);
+  const [warmupRatio, setWarmupRatio] = useState(0.1);
+  const [optim, setOptim] = useState('adamw_8bit');
+  const [gradientSteps, setGradientSteps] = useState(4);
+  const [peftR, setPeftR] = useState(32);
+  const [peftAlpha, setPeftAlpha] = useState(32);
+  const [peftDropout, setPeftDropout] = useState(0.0);
+
+  // Deploy
+  const [deployOnly, setDeployOnly] = useState(false);
+  const [runpodApiKey, setRunpodApiKey] = useState('');
+
+  // Errors
+  const [errors, setErrors] = useState({
+    modelName: '',
+    baseModel: '',
+    description: '',
+    epoch: '',
+    learningRate: '',
+    warmupRatio: '',
+    optimizer: '',
+    gradientSteps: '',
+    peftR: '',
+    peftAlpha: '',
+    peftDropout: ''
+  });
+
+  // On load: get user
+  useEffect(() => {
+    const u = localStorage.getItem('user');
+    if (u) {
+      try {
+        setUser(JSON.parse(u));
+      } catch {}
+    }
+  }, []);
+
+  // If retrain
+  useEffect(() => {
+    const isRetrainMode = searchParams.get('retrain');
+    if (!isRetrainMode) return;
+    setRetrainFlag('retrain');
+    (async () => {
+      try {
+        await fetch(`${API_HOST}/clear_logs`);
+        const r = await fetch(`${API_HOST}/get_retrain_info?model_id=${queryModelId}`);
+        const d = await r.json();
+        setModelName(d.model_name || '');
+        setBaseModel(d.model_type || '');
+        setDescription(d.description || '');
+        setPeftR(d.peft_r ?? 16);
+        setPeftAlpha(d.peft_alpha ?? 16);
+        setPeftDropout(d.peft_dropout ?? 0);
+      } catch {}
+    })();
+  }, [API_HOST, queryModelId, searchParams]);
+
+  // If user changes or not retrain => fetch podcast ID
+  useEffect(() => {
+    if (!user?.email) return;
+    if (retrainFlag) {
+      setPodCastID(queryModelId);
+      podCastIDRef.current = queryModelId;
+      return;
+    }
+    const check = async () => {
+      try {
+        const r = await fetch(`${API_HOST}/get_podcast?email=${user.email}`);
+        const d = await r.json();
+        setPodCastID(d.podcast_id);
+        podCastIDRef.current = d.podcast_id;
+      } catch {
+        setPodCastID('');
+        podCastIDRef.current = '';
+      }
+    };
+    check();
+    const i = setInterval(check, 20000);
+    return () => clearInterval(i);
+  }, [user, retrainFlag, queryModelId, API_HOST]);
+
+  // Agent Roles
+  const [agentRole, setAgentRole] = useState('You are a helpful AI assistant. Please be clear & concise.');
+  const [businessInformation, setBusinessInformation] = useState('');
+  const [specificRules, setSpecificRules] = useState('');
+
+  // Conversation
+  const selectedConv = conversations.find(c => c.id === selectedConvId);
+  const messages = selectedConv ? selectedConv.messages : [];
+
+  const handleSelectConversation = (conv: Conversation) => {
+    setSelectedConvId(conv.id);
+    setCurrentSpeaker('user');
+    setEditingMessageId(null);
+    setEditingText('');
+  };
+
+  const handleAddConversation = () => {
+    const newId = conversations.length
+      ? conversations[conversations.length - 1].id + 1
+      : 1;
+    const newConv: Conversation = {
+      id: newId,
+      title: `Conv #${newId}`,
+      messages: []
+    };
+    setConversations(prev => [...prev, newConv]);
+    setSelectedConvId(newId);
+    setCurrentSpeaker('user');
+    setTypedMessage('');
+    setEditingMessageId(null);
+    setEditingText('');
+  };
+
+  const handleDeleteConversation = (conv: Conversation) => {
+    setConversations(prev => {
+      let filtered = prev.filter(c => c.id !== conv.id);
+      filtered = filtered.map((c, idx) => ({
+        ...c,
+        id: idx + 1,
+        title: `Conv #${idx + 1}`
+      }));
+      if (!filtered.length) {
+        setSelectedConvId(0);
+      } else {
+        const stillExists = filtered.find(c2 => c2.id === selectedConvId);
+        if (!stillExists) {
+          const first = filtered[0];
+          setSelectedConvId(first.id);
+        }
+      }
+      return filtered;
+    });
+    setTypedMessage('');
+    setEditingMessageId(null);
+    setEditingText('');
+  };
+
+  const handleSendMessage = () => {
+    if (!typedMessage.trim() || !selectedConvId) return;
+    setConversations(prev =>
+      prev.map(c => {
+        if (c.id === selectedConvId) {
+          return {
+            ...c,
+            messages: [...c.messages, { role: currentSpeaker, content: typedMessage.trim() }]
+          };
+        }
+        return c;
+      })
+    );
+    setTypedMessage('');
+    setCurrentSpeaker(prev => (prev === 'user' ? 'agent' : 'user'));
+  };
+
+  // Inline editing
+  const startEditing = (index: number, content: string) => {
+    setEditingMessageId(index);
+    setEditingText(content);
+  };
+
+  const saveEditedMessage = (index: number) => {
+    if (!selectedConvId) return;
+    if (editingText.trim()) {
+      setConversations(prev =>
+        prev.map(conv => {
+          if (conv.id !== selectedConvId) return conv;
+          const newData = [...conv.messages];
+          newData[index] = { ...newData[index], content: editingText };
+          return { ...conv, messages: newData };
+        })
+      );
+    }
+    setEditingMessageId(null);
+    setEditingText('');
+  };
+
+  const cancelEditing = () => {
+    setEditingMessageId(null);
+    setEditingText('');
+  };
+
+  // Auto-scroll
+  const chatContainerRef = useRef<HTMLDivElement | null>(null);
+
+  const scrollToBottom = () => {
+    if (chatContainerRef.current) {
+      chatContainerRef.current.scrollTop = chatContainerRef.current.scrollHeight;
+    }
+  };
+  
+  useEffect(() => {
+    scrollToBottom();
+  }, [messages]);
+  
+  // Finetuning
+  const canTrain = () => {
+    if (!user?.email) return false;
+    if (isFinetuning) return false;
+    if (retrainFlag) return true;
+    return podCastID === '';
+  };
+
+  const handleFieldChange = (field: 'modelName' | 'description', val: string) => {
+    if (field === 'modelName') {
+      setModelName(val);
+      setErrors(e => ({ ...e, modelName: val ? '' : 'Model name is required' }));
+    } else {
+      setDescription(val);
+      setErrors(e => ({ ...e, description: val ? '' : 'Description is required' }));
+    }
+  };
+
+  const validateAllFields = () => {
+    const e = {
+      modelName: modelName ? '' : 'Model name is required',
+      baseModel: baseModel ? '' : 'Base model is required',
+      description: description ? '' : 'Description is required',
+      epoch: epoch > 0 ? '' : 'Epoch>0',
+      learningRate: learningRate > 0 ? '' : 'LR>0',
+      warmupRatio: warmupRatio >= 0 && warmupRatio <= 1 ? '' : '0<=ratio<=1',
+      optimizer: optim ? '' : 'Choose optimizer',
+      gradientSteps: gradientSteps > 0 ? '' : 'GradSteps>0',
+      peftR: peftR > 0 ? '' : 'peftR>0',
+      peftAlpha: peftAlpha > 0 ? '' : 'peftAlpha>0',
+      peftDropout: peftDropout >= 0 && peftDropout <= 1 ? '' : '0<=dropout<=1'
+    };
+    setErrors(e);
+    const hasFieldErr = Object.values(e).some(v => v !== '');
+    return !hasFieldErr;
+  };
+
+  const handleStartFinetuning = async () => {
+    if (!validateAllFields()) return;
+    setIsFinetuning(true);
+    try {
+      // If brand new (not retrain), do /finetune first
+      if (!retrainFlag) {
+        const body = {
+          email:user?.email||'', model_name:modelName, model_type:baseModel, description,
+          is_llm:true, runpod_api_key:runpodApiKey||null, peft_r:peftR, peft_alpha:peftAlpha, peft_dropout:peftDropout, 
+          is_agent:true,
+        };
+        const finRes = await fetch(`${API_HOST}/finetune`, {
+          method:'POST', headers:{'Content-Type':'application/json'},
+          body: JSON.stringify(body)
+        });
+        if (!finRes.ok) { setIsFinetuning(false); return; }
+        // Wait 30s
+        let s=60; setLogMessage(`Creating docker image ${s} seconds remaining... (DO NOT REFRESH/CLOSE PAGE)`);
+        await new Promise<void>(r=>{
+          const it=setInterval(()=>{
+            s-=1;
+            if (s>0) setLogMessage(`Creating docker image ${s} seconds remaining... (DO NOT REFRESH/CLOSE PAGE)`);
+            else {clearInterval(it);setLogMessage(''); r();}
+          },1000);
+        });
+      }
+      // Dot animation
+      let d=0; setLogMessage('Preparing docker image (DO NOT REFRESH/CLOSE PAGE)');
+      const dotInt=setInterval(()=>{
+        d=(d%6)+1;
+        setLogMessage(`Preparing docker image${'.'.repeat(d)} (DO NOT REFRESH/CLOSE PAGE)`);
+      },2000);
+
+      const poll=async()=>{
+        try {
+          const head=await fetch(`${POD_API_HOST(podCastIDRef.current)}/logs`,{method:'HEAD'});
+          if (head.ok) {
+            clearInterval(pi); 
+            clearInterval(dotInt);
+            setLogMessage(''); 
+            setStartStreaming(true);
+
+            const dataToSend = conversations.filter((c) => c.messages.length > 0);
+            const systemPromptParts: string[] = [];
+            if (agentRole.trim()) {
+              systemPromptParts.push(agentRole.trim());
+            }
+            if (specificRules.trim()) {
+              systemPromptParts.push(specificRules.trim());
+            }
+            if (businessInformation.trim()) {
+              systemPromptParts.push(`Business Information:\n${businessInformation.trim()}`);
+            }
+            const systemPrompt = systemPromptParts.join('\n\n');
+
+            const meta = {
+              user_email:user?.email||'', model_name:modelName, model_type:baseModel, description,
+              epochs:epoch, learning_rate:learningRate, warmup_ratio:warmupRatio, optimizer:optim,
+              gradient_accumulation_steps:gradientSteps, peft_r:peftR, peft_alpha:peftAlpha,
+              peft_dropout:peftDropout, data:dataToSend, model_id:podCastIDRef.current,
+              retrain_flag: retrainFlag||'', system_prompt: systemPrompt, is_agent:true,
+            };
+            const r=await fetch(`${POD_API_HOST(podCastIDRef.current)}/run_model_llm`,{
+              method:'POST',headers:{'Content-Type':'application/json'},
+              body:JSON.stringify(meta)
+            });
+            if (!r.ok) throw new Error('Fail start LLM finetuning');
+          }
+        } catch {}
+      };
+      poll();
+      const pi=setInterval(poll,30000);
+    } catch {
+      setIsFinetuning(false);
+    }
+  };
+
+  // File handling
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // 1) Download template from public folder
+  const handleDownloadTemplate = () => {
+    // Programmatic link click to trigger download from public folder
+    const link = document.createElement('a');
+    link.href = '/conversation.json'; // ensure 'conversation.json' is in public/
+    link.download = 'conversation.json';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
+  // 2) Import JSON from user local file
+  const handleImportClick = () => {
+    fileInputRef.current?.click();
+  };
+  const handleImportFile = async (e: ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    try {
+      const text = await file.text();
+      // expected to be an array of objects: [{ id, messages: [ {role, content}, ... ]}, ...]
+      const data = JSON.parse(text);
+
+      // if conversation #1 is empty => remove it
+      setConversations(prev => {
+        let newConvs = [...prev];
+        const conv1 = newConvs.find(c => c.id === 1);
+        if (conv1 && conv1.messages.length === 0) {
+          newConvs = newConvs.filter(c => c.id !== 1);
+        }
+
+        // find max ID
+        let maxId = newConvs.reduce((acc, c) => Math.max(acc, c.id), 0);
+
+        data.forEach((convObj: any) => {
+          maxId += 1;
+          const mappedMessages = (convObj.messages || []).map((m: any) => ({
+            role: m.role === 'assistant' ? 'agent' : m.role,
+            content: m.content
+          }));
+          newConvs.push({
+            id: maxId,
+            title: `Conv #${maxId}`,
+            messages: mappedMessages
+          });
+        });
+        return newConvs;
+      });
+    } catch (err) {
+      console.error('Error importing JSON:', err);
+      alert('Failed to import JSON file. Check console.');
+    } finally {
+      // reset the file input
+      e.target.value = '';
+    }
+  };
+
+  // Streaming logs
+  useEffect(()=>{
+    if(!startStreaming){
+      if(pollingIntervalRef.current) clearInterval(pollingIntervalRef.current);
+      return;
+    }
+    pollingIntervalRef.current=setInterval(async()=>{
+      try{
+        const resp=await fetch(`${POD_API_HOST(podCastIDRef.current)}/current_logs`);
+        if(resp.ok){
+          const txt=await resp.text();
+          const lines=txt.split('\n').filter(x=>x.trim()!=='');
+          setLogs(prev=>Array.from(new Set([...prev,...lines])));
+        }
+      }catch{}
+    },1000);
+    return()=> pollingIntervalRef.current && clearInterval(pollingIntervalRef.current);
+  },[startStreaming]);
+
+  // Watch logs
+  useEffect(()=>{
+    if(!logs.length) return;
+    if(logs.some(l=>/Downloading shards:.*0%/.test(l))) setIsDownloading(true);
+    if(logs.some(l=>/Downloading shards:.*100%/.test(l)||/Loading checkpoint shards/.test(l))) {
+      setIsDownloading(false);
+    }
+    if(logs.some(l=>/Finetuning completed successfully\./.test(l))) {
+      setStartStreaming(false);
+      if(pollingIntervalRef.current) clearInterval(pollingIntervalRef.current);
+      (async()=>{
+        try {
+          if(!podCastIDRef.current) return;
+          await fetch(`${API_HOST}/finished_finetuning?podcast_id=${encodeURIComponent(podCastIDRef.current)}&is_llm=${true}`);
+        }catch{}
+      })();
+    }
+  },[logs,API_HOST]);
+
+  // Animate "Downloading shards"
+  useEffect(()=>{
+    if(isDownloading){
+      dotIntervalRef.current=setInterval(()=> setDotCount(p=>p<6?p+1:2),500);
+    } else {
+      if(dotIntervalRef.current) clearInterval(dotIntervalRef.current);
+      setDotCount(2);
+    }
+    return()=> dotIntervalRef.current && clearInterval(dotIntervalRef.current);
+  },[isDownloading]);
+
+  const combinedLogs = [...logs, ...(isDownloading?[`Downloading shards${'.'.repeat(dotCount)}`]:[])];
+
+  return (
+    <>
+      <Helmet>
+        <title>VAIS Console</title>
+      </Helmet>
+
+      <style>{`
+        /* Chat input styling */
+        .sendNewMessage {
+          background-color: #fff;
+          display: flex;
+          justify-content: space-between;
+          padding: 5px 10px;
+          border-radius: 6px;
+        }
+        .sendNewMessage button {
+          width: 32px;
+          height: 32px;
+          background-color: #ecefff;
+          border: none;
+          outline: none;
+          cursor: pointer;
+          font-size: 16px;
+          color: #4665ff;
+          border-radius: 50%;
+          transition: all 0.3s;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+        }
+        .sendNewMessage button:hover {
+          transform: scale(1.2);
+        }
+        #sendMsgBtn {
+          background-color: #3b5bfe;
+          color: #fff;
+        }
+      `}</style>
+
+      <PageTitleWrapper>
+        <PageHeader />
+      </PageTitleWrapper>
+
+      <Container maxWidth="lg">
+        <TabsContainerWrapper />
+
+        <Card>
+          <Grid container spacing={0}>
+            {/* MODEL SETTINGS */}
+            <Grid item xs={12}>
+              <Box p={4}>
+                <Card>
+                  <CardHeader 
+                    title="Model Settings"
+                  />
+                  <Divider />
+                  <Box p={4}>
+                    <Grid container spacing={2}>
+                      <Grid item xs={12} sm={6}>
+                        <TextField
+                          fullWidth
+                          variant="outlined"
+                          label="LLM Agent Name"
+                          placeholder="Enter model name"
+                          value={modelName}
+                          onChange={e => handleFieldChange('modelName', e.target.value)}
+                          error={!!errors.modelName}
+                          helperText={errors.modelName}
+                          disabled={!!retrainFlag}
+                        />
+                      </Grid>
+                      <Grid item xs={12} sm={6}>
+                        <TextField
+                          select
+                          fullWidth
+                          variant="outlined"
+                          label="Choose Base Model"
+                          value={baseModel}
+                          onChange={e => setBaseModel(e.target.value)}
+                          SelectProps={{ native: true }}
+                          error={!!errors.baseModel}
+                          helperText={errors.baseModel}
+                          disabled={!!retrainFlag}
+                        >
+                          <optgroup label="Instruct Models">
+                            <option value="Qwen2.5-7B">Qwen2.5-7B</option>
+                          </optgroup>
+                          <optgroup label="Reasoning Models">
+                            <option value="DeepSeek-R1-Qwen-7B">DeepSeek-R1-Qwen-7B</option>
+                          </optgroup>
+                          <optgroup label="Code Models">
+                            <option value="CodeLlama-7B">CodeLlama-7B</option>
+                          </optgroup>
+                          <optgroup label="Math Models">
+                            <option value="Qwen2.5-Math-7B">Qwen2.5-Math-7B</option>
+                          </optgroup>
+                        </TextField>
+                      </Grid>
+                      <Grid item xs={12}>
+                        <TextField
+                          fullWidth
+                          multiline
+                          minRows={2}
+                          variant="outlined"
+                          label="Description"
+                          placeholder="Enter description"
+                          value={description}
+                          onChange={e => handleFieldChange('description', e.target.value)}
+                          error={!!errors.description}
+                          helperText={errors.description}
+                          disabled={!!retrainFlag}
+                        />
+                      </Grid>
+                    </Grid>
+                  </Box>
+                </Card>
+
+
+              </Box>
+            </Grid>
+
+            {/* System Prompt + Business Information */}
+            <Grid item xs={12}>
+              <Divider />
+              <Box p={4} sx={{ background: theme.colors.alpha.black[5] }}>
+                <Card>
+                  <CardHeader
+                    title="Assistant Configuration & Business Context"
+                    subheader="Set up how the assistant role, provide your business details, and define specific rules to ensure accurate and relevant interactions."
+                    action={
+                      <IconButton onClick={() => setShowSystemPrompt(!showSystemPrompt)}>
+                        {showSystemPrompt ? <ExpandLessIcon /> : <ExpandMoreIcon />}
+                      </IconButton>
+                    }
+                  />
+                  <Collapse in={showSystemPrompt}>
+                    <Divider />
+                    <Box p={2}>
+                      <Grid container spacing={2}>
+                        <Grid item xs={12} sm={6}>
+                          <Card sx={{ p: 2 }}>
+                            <Box display="flex" alignItems="center" mb={1}>
+                              <PersonOutlineIcon sx={{ mr: 1, color: theme.palette.primary.main }} />
+                              <Typography variant="h6">Agent Role</Typography>
+                            </Box>
+                            <TextField
+                              fullWidth
+                              multiline
+                              placeholder="You are a helpful customer service assistant..."
+                              value={agentRole}
+                              onChange={(e) => {
+                                if (e.target.value.length <= 1000) {
+                                  setAgentRole(e.target.value);
+                                }
+                              }}
+                              sx={{
+                                flexGrow: 1,
+                                overflowY: 'auto',
+                                '& .MuiInputBase-root': {
+                                  height: '100%',
+                                  alignItems: 'flex-start',
+                                },
+                                '& textarea': {
+                                  height: '100% !important',
+                                  overflowY: 'auto',
+                                },
+                              }}
+                            />
+                            <Typography variant="caption" display="block" sx={{ mt: 0, textAlign: 'right' }}>
+                              {agentRole.length}/1000
+                            </Typography>
+                          </Card>
+                        </Grid>
+
+                        <Grid item xs={12} sm={6}>
+                          <Card sx={{ p: 2 }}>
+                            <Box display="flex" alignItems="center" mb={1}>
+                              <RuleIcon sx={{ mr: 1, color: theme.palette.warning.main }} />
+                              <Typography variant="h6">Specific Rules</Typography>
+                            </Box>
+                            <TextField
+                              fullWidth
+                              multiline
+                              placeholder="Add any specific rules here, such as 'Reply in Malaysia language only', etc..."
+                              value={specificRules}
+                              onChange={(e) => {
+                                if (e.target.value.length <= 1000) {
+                                  setSpecificRules(e.target.value);
+                                }
+                              }}
+                              sx={{
+                                flexGrow: 1,
+                                overflowY: 'auto',
+                                '& .MuiInputBase-root': {
+                                  height: '100%',
+                                  alignItems: 'flex-start',
+                                },
+                                '& textarea': {
+                                  height: '100% !important',
+                                  overflowY: 'auto',
+                                },
+                              }}
+                            />
+                            <Typography variant="caption" display="block" sx={{ mt: 0, textAlign: 'right' }}>
+                              {specificRules.length}/1000
+                            </Typography>
+                          </Card>
+                        </Grid>
+
+                        <Grid item xs={12} sm={12}>
+                          <Card sx={{ p: 2, height: '250px', display: 'flex', flexDirection: 'column' }}>
+                            <Box display="flex" alignItems="center" mb={1}>
+                              <BusinessIcon sx={{ mr: 1, color: theme.palette.success.main }} />
+                              <Typography variant="h6">Business Information</Typography>
+                            </Box>
+                            <TextField
+                              fullWidth
+                              multiline
+                              placeholder="Enter your business details here, such as product information, business location, contact, etc..."
+                              value={businessInformation}
+                              onChange={(e) => {
+                                if (e.target.value.length <= 20000) {
+                                  setBusinessInformation(e.target.value);
+                                }
+                              }}
+                              sx={{
+                                flexGrow: 1,
+                                overflowY: 'auto',
+                                '& .MuiInputBase-root': {
+                                  height: '100%',
+                                  alignItems: 'flex-start',
+                                },
+                                '& textarea': {
+                                  height: '100% !important',
+                                  overflowY: 'auto',
+                                },
+                              }}
+                            />
+                            <Typography variant="caption" display="block" sx={{ mt: 0, textAlign: 'right' }}>
+                              {businessInformation.length}/20000
+                            </Typography>
+                          </Card>
+                        </Grid>
+
+                      </Grid>
+                    </Box>
+                  </Collapse>
+                </Card>
+              </Box>
+              <Divider />
+            </Grid>
+
+
+            {/* Choose Data Source */}
+            <Grid item xs={12}>
+              <Divider />
+              <Box p={4} sx={{ background: theme.colors.alpha.white[70] }}>
+                <Card>
+                  <CardHeader
+                    title="Choose Data Source"
+                    subheader="Select the knowledge base or document source to enhance the assistant's responses using Retrieval-Augmented Generation (RAG) for accurate and up-to-date information."
+                  />
+                  <Divider />
+                  {/* RAG */}
+
+                </Card>
+              </Box>
+              <Divider />
+            </Grid>
+
+
+            {/* Conversation + Chat */}
+            <Grid item xs={12}>
+              <Divider />
+              <Box p={4} sx={{ background: theme.colors.alpha.black[5] }}>
+                <Card>
+                  <CardHeader
+                    title="Train Some Conversations for Sample Styling"
+                    subheader="Guide the agent's response style, structure, and specific intents, such as collecting user data or addressing FAQs."
+                    action={
+                      <FormControlLabel
+                        control={
+                          <Checkbox
+                            color="primary"
+                            checked={deployOnly}
+                            onChange={e => setDeployOnly(e.target.checked)}
+                            disabled={!!retrainFlag}
+                          />
+                        }
+                        label="Deploy model only"
+                      />
+                    }
+                  />
+                  <Divider />
+
+                  {!deployOnly && (
+                    <Box p={2}>
+                      <Grid container spacing={2}>
+                        {/* LEFT side: conversation table */}
+                        <Grid item xs={3}>
+                          <Card>
+                            <CardHeader
+                              title="Conversation Training"
+                              action={
+                                <Button
+                                  variant="outlined"
+                                  size="small"
+                                  onClick={handleAddConversation}
+                                >
+                                  Add Row
+                                </Button>
+                              }
+                            />
+                            <Divider />
+                            <TableContainer sx={{ height: 400, overflowY: 'auto' }}>
+                              <Table size="small">
+                                <TableHead>
+                                  <TableRow>
+                                    <TableCell>Title</TableCell>
+                                    <TableCell align="right">#Msg</TableCell>
+                                    <TableCell align="center">X</TableCell>
+                                  </TableRow>
+                                </TableHead>
+                                <TableBody>
+                                  {conversations.map((c) => (
+                                    <TableRow
+                                      key={c.id}
+                                      hover
+                                      onClick={() => handleSelectConversation(c)}
+                                      style={{ cursor: 'pointer' }}
+                                      selected={c.id === selectedConvId}
+                                    >
+                                      <TableCell>{c.title}</TableCell>
+                                      <TableCell align="right">{c.messages.length}</TableCell>
+                                      <TableCell
+                                        align="center"
+                                        onClick={(e) => e.stopPropagation()}
+                                      >
+                                        <IconButton
+                                          size="small"
+                                          color="error"
+                                          onClick={() => handleDeleteConversation(c)}
+                                        >
+                                          <CloseIcon fontSize="small" />
+                                        </IconButton>
+                                      </TableCell>
+                                    </TableRow>
+                                  ))}
+                                </TableBody>
+                              </Table>
+                            </TableContainer>
+                          </Card>
+                          <Box sx={{ mt: 2, display: 'flex', gap: 1 }}>
+                            <Button variant="outlined" size="small" onClick={handleDownloadTemplate}>
+                              Download Template
+                            </Button>
+                            <Button variant="outlined" size="small" onClick={handleImportClick}>
+                              Import JSON
+                            </Button>
+                            <input
+                              type="file"
+                              accept=".json"
+                              ref={fileInputRef}
+                              style={{ display: 'none' }}
+                              onChange={handleImportFile}
+                            />
+                          </Box>
+                        </Grid>
+                        
+
+                        {/* RIGHT side: the chat area */}
+                        <Grid item xs={9}>
+                          <Typography variant="subtitle1" sx={{ mb: 2 }}>
+                            Conversation:
+                          </Typography>
+
+                          <div
+                            ref={chatContainerRef}
+                            style={{
+                              height: '434px', 
+                              overflowY: 'auto',  // Enables scrolling inside the chat container
+                              border: '1px solid #ccc',
+                              borderRadius: '12px',
+                              marginBottom: '16px'
+                            }}
+                          >
+                            {messages.map((msg, idx) => {
+                              const displayName =
+                                msg.role === 'agent'
+                                  ? (modelName.trim() || 'Agent LLM')
+                                  : 'User';
+                              return (
+                                <ListItem key={idx} alignItems="flex-start">
+                                  <Avatar
+                                    sx={{
+                                      mr: 2,
+                                      bgcolor: msg.role === 'user' ? 'primary.main' : 'white.main'
+                                    }}
+                                  >
+                                    {msg.role === 'user' ? (
+                                      <i className="fa fa-user" />
+                                    ) : (
+                                      <img
+                                        src="/robot.svg"
+                                        alt="Agent"
+                                        style={{ width: 20, height: 20 }}
+                                      />
+                                    )}
+                                  </Avatar>
+                                  <ListItemText
+                                    primary={displayName}
+                                    secondary={
+                                      editingMessageId === idx ? (
+                                        <TextareaAutosize
+                                          value={editingText}
+                                          onChange={e => setEditingText(e.target.value)}
+                                          onKeyDown={e => {
+                                            if (e.key === 'Enter' && !e.shiftKey) {
+                                              e.preventDefault();
+                                              saveEditedMessage(idx);
+                                            } else if (e.key === 'Escape') {
+                                              cancelEditing();
+                                            }
+                                          }}
+                                          onBlur={() => saveEditedMessage(idx)}
+                                          autoFocus
+                                          style={{
+                                            width: '100%',
+                                            padding: '6px',
+                                            fontSize: '14px',
+                                            borderRadius: '4px',
+                                            border: '1px solid #ccc',
+                                            resize: 'none'
+                                          }}
+                                        />
+                                      ) : (
+                                        <Typography
+                                          variant="body2"
+                                          style={{ whiteSpace: 'pre-wrap', cursor: 'pointer' }}
+                                          onClick={() => startEditing(idx, msg.content)}
+                                          title="Click to edit"
+                                        >
+                                          {msg.content}
+                                        </Typography>
+                                      )
+                                    }
+                                  />
+                                </ListItem>
+                              );
+                            })}
+                          </div>
+
+                          {/* The input + send button area */}
+                          <Box className="sendNewMessage" sx={{ borderRadius: '50px' }}>
+                            <button
+                              className="addFiles"
+                              style={{
+                                borderRadius: '50%',
+                                overflow: 'hidden',
+                                marginRight: '8px'
+                              }}
+                            >
+                              {currentSpeaker === 'user' ? (
+                                <i className="fa fa-user" />
+                              ) : (
+                                <img
+                                  src="/robot.svg"
+                                  alt="Agent"
+                                  style={{ width: 20, height: 20 }}
+                                />
+                              )}
+                            </button>
+
+                            <TextareaAutosize
+                              minRows={1}
+                              maxRows={1}
+                              placeholder={
+                                currentSpeaker === 'user'
+                                  ? 'Type a message for User'
+                                  : 'Type reply from Agent'
+                              }
+                              value={typedMessage}
+                              onChange={e => setTypedMessage(e.target.value)}
+                              onKeyDown={e => {
+                                if (e.key === 'Enter' && !e.shiftKey) {
+                                  e.preventDefault();
+                                  handleSendMessage();
+                                }
+                              }}
+                              style={{
+                                flexGrow: 1,
+                                padding: '8px',
+                                border: 'none',
+                                outline: 'none',
+                                resize: 'none',
+                                fontSize: '14px',
+                                borderRadius: '4px',
+                                backgroundColor: 'transparent',
+                                color: '#000'
+                              }}
+                            />
+
+                            <button
+                              id="sendMsgBtn"
+                              onClick={() => {
+                                if (!typedMessage.trim()) return;
+                                handleSendMessage();
+                              }}
+                            >
+                              <i className="fa fa-paper-plane"></i>
+                            </button>
+                          </Box>
+
+
+                        </Grid>
+                      </Grid>
+                    </Box>
+                  )}
+                </Card>
+                {/* ADVANCED SETTINGS */}
+                <Card sx={{ mt: 2 }}>
+                  <CardHeader
+                    title="Training Settings"
+                    action={
+                      <IconButton onClick={() => setShowAdvanced(!showAdvanced)}>
+                        {showAdvanced ? <ExpandLessIcon /> : <ExpandMoreIcon />}
+                      </IconButton>
+                    }
+                  />
+                  <Collapse in={showAdvanced}>
+                    <Divider />
+                    <CardContent>
+                      <Box sx={{ mb: 4 }}>
+                        <Typography variant="h6" sx={{ mb: 2, display: 'flex', alignItems: 'center' }}>
+                          <Settings fontSize="small" sx={{ mr: 1 }} />
+                          Hyperparameters
+                        </Typography>
+                        <TextField
+                          label="Epoch"
+                          type="number"
+                          sx={{ m: 1, width: '25ch' }}
+                          value={epoch}
+                          onChange={e => setEpoch(+e.target.value)}
+                          error={!!errors.epoch}
+                          helperText={errors.epoch}
+                        />
+                        <TextField
+                          label="Learning Rate"
+                          type="number"
+                          sx={{ m: 1, width: '25ch' }}
+                          value={learningRate}
+                          onChange={e => setLearningRate(+e.target.value)}
+                          error={!!errors.learningRate}
+                          helperText={errors.learningRate}
+                        />
+                        <TextField
+                          label="Warmup Ratio"
+                          type="number"
+                          sx={{ m: 1, width: '25ch' }}
+                          value={warmupRatio}
+                          onChange={e => setWarmupRatio(+e.target.value)}
+                          error={!!errors.warmupRatio}
+                          helperText={errors.warmupRatio}
+                        />
+                      </Box>
+                      <Divider sx={{ my: 3 }} />
+
+                      <Box sx={{ mb: 4 }}>
+                        <Typography variant="h6" sx={{ mb: 2, display: 'flex', alignItems: 'center' }}>
+                          <Tune fontSize="small" sx={{ mr: 1 }} />
+                          Gradients
+                        </Typography>
+                        <TextField
+                          label="Optimizer"
+                          select
+                          sx={{ m: 1, width: '25ch' }}
+                          value={optim}
+                          onChange={e => setOptim(e.target.value)}
+                          error={!!errors.optimizer}
+                          helperText={errors.optimizer}
+                        >
+                          <MenuItem value="adamw_8bit">adamw_8bit</MenuItem>
+                          <MenuItem value="adamw_torch_fused">adamw_torch_fused</MenuItem>
+                          <MenuItem value="adamw_torch">adamw_torch</MenuItem>
+                          <MenuItem value="adamw_hf">adamw_hf</MenuItem>
+                        </TextField>
+                        <TextField
+                          label="Gradient Accumulation Steps"
+                          type="number"
+                          sx={{ m: 1, width: '25ch' }}
+                          value={gradientSteps}
+                          onChange={e => setGradientSteps(+e.target.value)}
+                          error={!!errors.gradientSteps}
+                          helperText={errors.gradientSteps}
+                        />
+                      </Box>
+                      <Divider sx={{ my: 3 }} />
+
+                      <Box>
+                        <Typography variant="h6" sx={{ mb: 2, display: 'flex', alignItems: 'center' }}>
+                          <Layers fontSize="small" sx={{ mr: 1 }} />
+                          LoRA
+                        </Typography>
+                        <TextField
+                          label="Peft R"
+                          type="number"
+                          sx={{ m: 1, width: '25ch' }}
+                          value={peftR}
+                          onChange={e => setPeftR(+e.target.value)}
+                          error={!!errors.peftR}
+                          helperText={errors.peftR}
+                          disabled={!!retrainFlag}
+                        />
+                        <TextField
+                          label="Peft Alpha"
+                          type="number"
+                          sx={{ m: 1, width: '25ch' }}
+                          value={peftAlpha}
+                          onChange={e => setPeftAlpha(+e.target.value)}
+                          error={!!errors.peftAlpha}
+                          helperText={errors.peftAlpha}
+                          disabled={!!retrainFlag}
+                        />
+                        <TextField
+                          label="Peft Dropout"
+                          type="number"
+                          sx={{ m: 1, width: '25ch' }}
+                          value={peftDropout}
+                          onChange={e => setPeftDropout(+e.target.value)}
+                          error={!!errors.peftDropout}
+                          helperText={errors.peftDropout}
+                          disabled={!!retrainFlag}
+                        />
+                      </Box>
+                      <Divider sx={{ my: 3 }} />
+
+                      <Box>
+                        <Typography variant="h6" sx={{ mb: 2 }}>
+                          Custom Runpod API Key (Optional)
+                        </Typography>
+                        <TextField
+                          label="Runpod API Key"
+                          variant="outlined"
+                          sx={{ m: 1, width: '75ch' }}
+                          value={runpodApiKey}
+                          onChange={e => setRunpodApiKey(e.target.value)}
+                        />
+                      </Box>
+                    </CardContent>
+                  </Collapse>
+                </Card>
+              </Box>
+              <Divider />
+            </Grid>
+            
+            {/* Logs + Start Finetuning */}
+            <Grid item xs={12}>
+              <Box p={4} sx={{ background: theme.colors.alpha.white[70] }}>
+                <Button
+                  variant="contained"
+                  color="info"
+                  fullWidth
+                  sx={{ mb: 2 }}
+                  onClick={handleStartFinetuning}
+                  startIcon={
+                    !user?.email
+                      ? <PlayArrowIcon />
+                      : canTrain()
+                      ? <PlayArrowIcon />
+                      : <CircularProgress size={20} color="inherit" />
+                  }
+                  disabled={!canTrain()}
+                >
+                  {isFinetuning
+                    ? 'Training...'
+                    : retrainFlag
+                    ? 'Continue Training'
+                    : 'Start Training'}
+                </Button>
+
+                {!user?.email && (
+                  <Typography variant="subtitle1" sx={{ mb: 2, color: 'white' }}>
+                    *Please sign in to start training
+                  </Typography>
+                )}
+
+                <Card>
+                  <CardHeader title="Logs" />
+                  <Divider />
+                  <Box
+                    p={2}
+                    sx={{
+                      backgroundColor: 'rgba(0,0,0,0.8)',
+                      color: 'white',
+                      overflowY: 'auto',
+                      maxHeight: 400,
+                      fontFamily: 'monospace',
+                      whiteSpace: 'pre-wrap'
+                    }}
+                  >
+                    <Typography variant="body2">
+                      {combinedLogs.length
+                        ? combinedLogs.map((l,i)=><div key={i}>{l}</div>)
+                        : logMessage || "Logs will appear here..."}
+                    </Typography>
+                  </Box>
+                </Card>
+              </Box>
+            </Grid>
+          </Grid>
+        </Card>
+      </Container>
+      <Footer />
+    </>
+  );
+}
+
+export default AgentLLM;

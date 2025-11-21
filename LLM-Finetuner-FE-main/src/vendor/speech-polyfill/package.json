@@ -1,0 +1,63 @@
+{
+  "name": "speech-recognition-aws-polyfill",
+  "version": "0.3.0",
+  "description": "Polyfill for the SpeechRecognition browser API using AWS Transcribe",
+  "main": "dist/index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "build": "webpack",
+    "prepublish": "npm run build",
+    "start": "webpack serve --config ./webpack.config.js --mode development"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ceuk/speech-recognition-aws-polyfill.git"
+  },
+  "keywords": [
+    "AWS",
+    "Transcribe",
+    "SpeechRecognition",
+    "Polyfill"
+  ],
+  "author": "CEUK <ceuk.dev@gmail.com>",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/ceuk/speech-recognition-aws-polyfill/issues"
+  },
+  "homepage": "https://github.com/ceuk/speech-recognition-aws-polyfill#readme",
+  "devDependencies": {
+    "@babel/core": "^7.12.10",
+    "@babel/plugin-transform-runtime": "^7.12.10",
+    "@babel/preset-env": "^7.12.10",
+    "@types/dom-speech-recognition": "0.0.1",
+    "@types/ramda": "^0.27.33",
+    "@types/readable-stream": "^2.3.9",
+    "babel-loader": "^8.2.2",
+    "ts-loader": "^8.0.17",
+    "typescript": "^4.2.2",
+    "webpack": "^5.10.2",
+    "webpack-cli": "^4.2.0",
+    "webpack-dev-server": "^3.11.0"
+  },
+  "dependencies": {
+    "@aws-sdk/eventstream-marshaller": "^1.0.0-rc.10",
+    "@aws-sdk/util-utf8-node": "^1.0.0-rc.8",
+    "@babel/runtime": "^7.12.5",
+    "@versita/fp-lib": "^2.1.13",
+    "arraybuffer-to-buffer": "0.0.7",
+    "aws-sdk": "^2.810.0",
+    "buffer": "^6.0.3",
+    "crypto-browserify": "^3.12.0",
+    "get-user-media-promise": "^1.1.4",
+    "microphone-stream": "^5.3.1",
+    "process": "^0.11.10",
+    "query-string": "^6.13.7",
+    "ramda": "^0.27.1",
+    "ramda-async": "^0.2.1",
+    "readable-stream": "^3.6.0",
+    "remeda": "0.0.27",
+    "stream-browserify": "^3.0.0",
+    "util": "^0.12.3",
+    "webcrypto": "^0.1.1"
+  }
+}

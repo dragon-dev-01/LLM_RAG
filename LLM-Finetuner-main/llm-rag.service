@@ -1,0 +1,45 @@
+[Unit]
+Description=LLM RAG Multi-Tenant API Service
+After=network.target postgresql.service
+
+[Service]
+Type=notify
+# Update these paths to match your deployment
+User=your_user
+Group=your_group
+WorkingDirectory=/path/to/LLM-Finetuner-main
+
+# Environment variables
+Environment="PATH=/path/to/venv/bin"
+Environment="DATABASE_URL=postgresql://user:password@localhost/llm_rag_db"
+Environment="MILVUS_HOST=localhost"
+Environment="MILVUS_PORT=19530"
+Environment="VLLM_BASE_URL=http://localhost:8000"
+Environment="TRITON_BASE_URL=http://localhost:8001"
+Environment="BYPASS_LOGIN=false"
+Environment="GOOGLE_CLIENT_ID=your_google_client_id"
+Environment="ADAPTER_BASE_PATH=/var/lib/llm-rag/adapters"
+Environment="CUDA_AVAILABLE=true"
+Environment="FLASK_APP=app_new.py"
+Environment="GUNICORN_WORKERS=4"
+Environment="GUNICORN_ACCESS_LOG=/var/log/llm-rag/access.log"
+Environment="GUNICORN_ERROR_LOG=/var/log/llm-rag/error.log"
+
+# ExecStart
+ExecStart=/path/to/venv/bin/gunicorn -c gunicorn_config.py app_new:app
+ExecReload=/bin/kill -s HUP $MAINPID
+
+# Security
+NoNewPrivileges=true
+PrivateTmp=true
+
+# Restart policy
+Restart=always
+RestartSec=10
+
+# Resource limits
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target
+

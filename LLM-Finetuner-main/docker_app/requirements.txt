@@ -1,0 +1,36 @@
+Flask==2.2.5
+flask-cors==3.0.10
+tqdm==4.67.1
+# torch==2.1.2+cu121
+# torchvision==0.16.2+cu121
+torchvision
+torch==2.6.0
+transformers==4.49.0
+peft==0.14.0
+pandas==2.2.3
+Pillow==11.1.0
+bitsandbytes==0.45.0
+onnxruntime==1.20.1
+onnxruntime-genai==0.5.2
+optimum
+unsloth==2025.3.8
+unsloth_zoo==2025.3.7
+unsloth
+unsloth_zoo
+xformers
+qwen-vl-utils==0.0.10
+lancedb==0.20.0
+llama-index==0.12.22
+llama-index-vector-stores-lancedb==0.3.0
+llama-index-embeddings-huggingface==0.5.2
+llama-index-readers-web==0.3.7
+llama-index-readers-file==0.4.5
+python-pptx
+selenium
+webdriver-manager
+pdf2image
+beautifulsoup4
+requests
+openai==1.71.0
+sqlalchemy>=2.0
+aiosqlite
