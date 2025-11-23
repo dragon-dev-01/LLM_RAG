@@ -400,24 +400,27 @@ sleep 5
 echo -e "${GREEN}[10/10]${NC} Starting frontend server..."
 cd "$FRONTEND_DIR"
 
-# Kill any existing node processes on port 3000
-lsof -ti:3000 | xargs kill -9 || true
-sleep 2
+# More aggressive cleanup - kill everything on port 3000 and Flowise
+echo -e "${YELLOW}Cleaning up port 3000 and any Flowise processes...${NC}"
+lsof -ti:3000 | xargs kill -9 2>/dev/null || true
+pkill -f flowise 2>/dev/null || true
+pkill -f "node.*flowise" 2>/dev/null || true
+ps aux | grep -i flowise | grep -v grep | awk '{print $2}' | xargs kill -9 2>/dev/null || true
+sleep 3
 
 # Start frontend in screen (verify npm is available first)
 if command -v npm &> /dev/null; then
     echo -e "${YELLOW}Starting frontend with npm...${NC}"
-    # Ensure .env file exists
+    # Ensure .env file exists with all required variables
     cd "$FRONTEND_DIR"
-    if [ ! -f .env ]; then
-        echo "REACT_APP_API_HOST=http://localhost:5000" > .env
-        echo "REACT_APP_BYPASS_LOGIN=true" >> .env
-        echo "PORT=3000" >> .env
-    fi
-    
-    # Kill any existing node processes on port 3000
-    lsof -ti:3000 | xargs kill -9 2>/dev/null || true
-    sleep 1
+    cat > .env << EOF
+REACT_APP_API_HOST=http://localhost:5000
+REACT_APP_BYPASS_LOGIN=true
+REACT_APP_GOOGLE_CLIENT_ID=
+PORT=3000
+HOST=0.0.0.0
+DANGEROUSLY_DISABLE_HOST_CHECK=true
+EOF
     
     screen -dmS llm-rag-frontend bash -c "
         cd $FRONTEND_DIR
@@ -426,15 +429,23 @@ if command -v npm &> /dev/null; then
         export PORT=3000
         export HOST=0.0.0.0
         export DANGEROUSLY_DISABLE_HOST_CHECK=true
-        BROWSER=none HOST=0.0.0.0 PORT=3000 npm start 2>&1 | tee /tmp/frontend.log
+        BROWSER=none npm start 2>&1 | tee /tmp/frontend.log
     "
     echo -e "${GREEN}Frontend started in screen session${NC}"
     echo -e "${YELLOW}Note: Frontend may take 1-2 minutes to compile${NC}"
     sleep 5
     
-    # Verify frontend started
+    # Verify frontend started and is serving the correct app
     if pgrep -f "node.*react-scripts" > /dev/null || pgrep -f "npm start" > /dev/null; then
         echo -e "${GREEN}✓ Frontend process started${NC}"
+        # Wait a bit more and verify it's serving the correct app
+        sleep 10
+        if curl -s http://localhost:3000 2>/dev/null | grep -q "LLM Finetuner\|VAISICO\|root"; then
+            echo -e "${GREEN}✓ Frontend is serving the correct application${NC}"
+        else
+            echo -e "${YELLOW}⚠ Frontend is running but may not be serving the correct app${NC}"
+            echo -e "${YELLOW}  Check: screen -r llm-rag-frontend${NC}"
+        fi
     else
         echo -e "${YELLOW}⚠ Frontend process may not have started yet, check logs: screen -r llm-rag-frontend${NC}"
     fi
@@ -451,6 +462,15 @@ else
     if apt-get install -y npm 2>/dev/null; then
         echo -e "${GREEN}npm installed, starting frontend...${NC}"
         cd "$FRONTEND_DIR"
+        # Ensure .env file exists with all required variables
+        cat > .env << EOF
+REACT_APP_API_HOST=http://localhost:5000
+REACT_APP_BYPASS_LOGIN=true
+REACT_APP_GOOGLE_CLIENT_ID=
+PORT=3000
+HOST=0.0.0.0
+DANGEROUSLY_DISABLE_HOST_CHECK=true
+EOF
         screen -dmS llm-rag-frontend bash -c "
             cd $FRONTEND_DIR
             export REACT_APP_API_HOST=http://localhost:5000
@@ -458,7 +478,7 @@ else
             export PORT=3000
             export HOST=0.0.0.0
             export DANGEROUSLY_DISABLE_HOST_CHECK=true
-            BROWSER=none HOST=0.0.0.0 PORT=3000 DANGEROUSLY_DISABLE_HOST_CHECK=true npm start 2>&1 | tee /tmp/frontend.log
+            BROWSER=none npm start 2>&1 | tee /tmp/frontend.log
         "
     else
         echo -e "${YELLOW}npm installation failed. Frontend will not start.${NC}"
