@@ -5,9 +5,34 @@
 # Don't use set -e - we want to handle errors gracefully
 set +e  # Don't exit on error - we'll handle failures manually
 
+# Trap to ensure container stays alive even on unexpected errors
+trap 'echo "Script encountered an error, but keeping container alive..."; exec tail -f /dev/null' ERR
+
+# Ensure container stays alive at the end
+cleanup_and_keep_alive() {
+    echo ""
+    echo "=========================================="
+    echo "Script completed. Container will stay alive."
+    echo "=========================================="
+    exec tail -f /dev/null
+}
+
 echo "=========================================="
 echo "🚀 LLM RAG Platform - Auto Deployment"
 echo "=========================================="
+echo ""
+echo "📋 System Information:"
+echo "  • Date: $(date)"
+echo "  • Hostname: $(hostname)"
+echo "  • User: $(whoami)"
+echo "  • Working Directory: $(pwd)"
+echo "  • Script: $0"
+echo ""
+
+# Log to a file for debugging
+LOG_FILE="/tmp/vast_ai_deployment.log"
+echo "Deployment started at $(date)" > "$LOG_FILE"
+echo "==========================================" >> "$LOG_FILE"
 echo ""
 
 # Colors for output
@@ -154,7 +179,20 @@ if [ -d "$PROJECT_DIR" ]; then
     cd "$PROJECT_DIR"
     git pull || echo "Git pull failed, continuing with existing code..."
 else
-    git clone "$REPO_URL" "$PROJECT_DIR"
+    echo -e "${YELLOW}Cloning repository from $REPO_URL...${NC}"
+    git clone "$REPO_URL" "$PROJECT_DIR" || {
+        echo -e "${RED}Git clone failed!${NC}"
+        echo -e "${YELLOW}This may be a network issue. Continuing anyway...${NC}"
+        # Create directories manually if git clone fails
+        mkdir -p "$PROJECT_DIR" || true
+    }
+fi
+
+# Verify project directory exists
+if [ ! -d "$PROJECT_DIR" ]; then
+    echo -e "${RED}ERROR: Project directory does not exist!${NC}"
+    echo -e "${YELLOW}Creating minimal directory structure...${NC}"
+    mkdir -p "$BACKEND_DIR" "$FRONTEND_DIR" || true
 fi
 
 # Step 3: Start MilvusDB
@@ -162,7 +200,74 @@ echo -e "${GREEN}[3/10]${NC} Starting MilvusDB..."
 cd "$BACKEND_DIR"
 if [ ! -f docker-compose.yml ]; then
     echo -e "${RED}ERROR: docker-compose.yml not found!${NC}"
-    exit 1
+    echo -e "${YELLOW}Attempting to create docker-compose.yml...${NC}"
+    # Try to create a basic docker-compose.yml if it doesn't exist
+    cat > docker-compose.yml << 'EOF'
+version: '3.5'
+services:
+  etcd:
+    container_name: milvus-etcd
+    image: quay.io/coreos/etcd:v3.5.5
+    environment:
+      - ETCD_AUTO_COMPACTION_MODE=revision
+      - ETCD_AUTO_COMPACTION_RETENTION=1000
+      - ETCD_QUOTA_BACKEND_BYTES=4294967296
+      - ETCD_SNAPSHOT_COUNT=50000
+    volumes:
+      - etcd_data:/etcd
+    command: etcd -advertise-client-urls=http://127.0.0.1:2379 -listen-client-urls http://0.0.0.0:2379 --data-dir /etcd
+    healthcheck:
+      test: ["CMD", "etcdctl", "endpoint", "health"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+
+  minio:
+    container_name: milvus-minio
+    image: minio/minio:RELEASE.2023-03-20T20-16-18Z
+    environment:
+      MINIO_ACCESS_KEY: minioadmin
+      MINIO_SECRET_KEY: minioadmin
+    ports:
+      - "9001:9001"
+      - "9000:9000"
+    volumes:
+      - minio_data:/minio_data
+    command: minio server /minio_data --console-address ":9001"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+
+  standalone:
+    container_name: milvus-standalone
+    image: milvusdb/milvus:v2.3.4
+    command: ["milvus", "run", "standalone"]
+    environment:
+      ETCD_ENDPOINTS: etcd:2379
+      MINIO_ADDRESS: minio:9000
+    volumes:
+      - milvus_data:/var/lib/milvus
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9091/healthz"]
+      interval: 30s
+      start_period: 90s
+      timeout: 20s
+      retries: 3
+    ports:
+      - "19530:19530"
+      - "9091:9091"
+    depends_on:
+      - "etcd"
+      - "minio"
+
+volumes:
+  etcd_data:
+  minio_data:
+  milvus_data:
+EOF
+    echo -e "${GREEN}✓ Created docker-compose.yml${NC}"
 fi
 
 # Start Milvus in background (try docker-compose or docker compose)
@@ -701,5 +806,6 @@ echo ""
 
 # Keep script running (vast.ai requirement)
 # Use exec to replace shell process and ensure container stays alive
-exec tail -f /dev/null
+# This MUST be the last line - it keeps the container from exiting
+cleanup_and_keep_alive
 
