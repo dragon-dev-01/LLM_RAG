@@ -432,22 +432,38 @@ EOF
         BROWSER=none npm start 2>&1 | tee /tmp/frontend.log
     "
     echo -e "${GREEN}Frontend started in screen session${NC}"
-    echo -e "${YELLOW}Note: Frontend may take 1-2 minutes to compile${NC}"
-    sleep 5
+    echo -e "${YELLOW}Waiting for frontend to compile (this may take 2-5 minutes)...${NC}"
     
-    # Verify frontend started and is serving the correct app
-    if pgrep -f "node.*react-scripts" > /dev/null || pgrep -f "npm start" > /dev/null; then
-        echo -e "${GREEN}✓ Frontend process started${NC}"
-        # Wait a bit more and verify it's serving the correct app
+    # Wait longer and poll for frontend to be ready
+    FRONTEND_READY=false
+    for i in {1..30}; do
         sleep 10
-        if curl -s http://localhost:3000 2>/dev/null | grep -q "LLM Finetuner\|VAISICO\|root"; then
-            echo -e "${GREEN}✓ Frontend is serving the correct application${NC}"
+        if pgrep -f "node.*react-scripts" > /dev/null || pgrep -f "npm start" > /dev/null; then
+            # Check if port is listening on 0.0.0.0
+            if netstat -tlnp 2>/dev/null | grep -q "0.0.0.0:3000 " || ss -tlnp 2>/dev/null | grep -q "0.0.0.0:3000 "; then
+                # Try to access the frontend
+                if curl -s http://localhost:3000 2>/dev/null | grep -q "LLM Finetuner\|VAISICO\|root\|<!DOCTYPE html"; then
+                    echo -e "${GREEN}✓ Frontend is ready and accessible on port 3000${NC}"
+                    FRONTEND_READY=true
+                    break
+                fi
+            fi
+            echo -e "${YELLOW}  Still compiling... ($i/30)${NC}"
         else
-            echo -e "${YELLOW}⚠ Frontend is running but may not be serving the correct app${NC}"
-            echo -e "${YELLOW}  Check: screen -r llm-rag-frontend${NC}"
+            echo -e "${RED}  Frontend process stopped! Check logs: screen -r llm-rag-frontend${NC}"
+            tail -20 /tmp/frontend.log 2>/dev/null || true
+            break
         fi
-    else
-        echo -e "${YELLOW}⚠ Frontend process may not have started yet, check logs: screen -r llm-rag-frontend${NC}"
+    done
+    
+    if [ "$FRONTEND_READY" = false ]; then
+        echo -e "${YELLOW}⚠ Frontend may still be compiling or encountered an error${NC}"
+        echo -e "${YELLOW}  Check logs: screen -r llm-rag-frontend${NC}"
+        echo -e "${YELLOW}  Or view: tail -f /tmp/frontend.log${NC}"
+        
+        # Show last 30 lines of log
+        echo -e "${YELLOW}  Last 30 lines of frontend log:${NC}"
+        tail -30 /tmp/frontend.log 2>/dev/null || echo "No log file found"
     fi
 else
     echo -e "${RED}ERROR: npm not found! Frontend cannot start.${NC}"
@@ -480,6 +496,26 @@ EOF
             export DANGEROUSLY_DISABLE_HOST_CHECK=true
             BROWSER=none npm start 2>&1 | tee /tmp/frontend.log
         "
+        echo -e "${YELLOW}Waiting for frontend to compile (this may take 2-5 minutes)...${NC}"
+        
+        # Wait and poll for frontend to be ready
+        FRONTEND_READY=false
+        for i in {1..30}; do
+            sleep 10
+            if pgrep -f "node.*react-scripts" > /dev/null || pgrep -f "npm start" > /dev/null; then
+                if netstat -tlnp 2>/dev/null | grep -q "0.0.0.0:3000 " || ss -tlnp 2>/dev/null | grep -q "0.0.0.0:3000 "; then
+                    if curl -s http://localhost:3000 2>/dev/null | grep -q "LLM Finetuner\|VAISICO\|root\|<!DOCTYPE html"; then
+                        echo -e "${GREEN}✓ Frontend is ready and accessible on port 3000${NC}"
+                        FRONTEND_READY=true
+                        break
+                    fi
+                fi
+                echo -e "${YELLOW}  Still compiling... ($i/30)${NC}"
+            else
+                echo -e "${RED}  Frontend process stopped!${NC}"
+                break
+            fi
+        done
     else
         echo -e "${YELLOW}npm installation failed. Frontend will not start.${NC}"
         echo -e "${YELLOW}You can start it manually later with:${NC}"
