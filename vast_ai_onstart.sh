@@ -2,7 +2,8 @@
 # Vast.ai On-Start Script for LLM RAG Platform
 # This script automatically installs and starts the entire application
 
-set -e  # Exit on error
+# Don't use set -e - we want to handle errors gracefully
+set +e  # Don't exit on error - we'll handle failures manually
 
 echo "=========================================="
 echo "🚀 LLM RAG Platform - Auto Deployment"
@@ -25,6 +26,8 @@ FRONTEND_DIR="$PROJECT_DIR/LLM-Finetuner-FE-main"
 echo -e "${GREEN}[1/10]${NC} Updating system and installing dependencies..."
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -y
+
+# Install basic dependencies first (skip docker for now)
 apt-get install -y \
     python3 \
     python3-pip \
@@ -33,10 +36,6 @@ apt-get install -y \
     curl \
     wget \
     build-essential \
-    docker.io \
-    docker-compose \
-    nodejs \
-    npm \
     screen \
     sqlite3 \
     libpq-dev \
@@ -44,13 +43,59 @@ apt-get install -y \
     tesseract-ocr \
     libtesseract-dev \
     libgl1-mesa-glx \
-    libglib2.0-0
+    libglib2.0-0 || true
 
-# Install Node.js 18+ if not available
-if ! command -v node &> /dev/null || [ "$(node -v | cut -d'v' -f2 | cut -d'.' -f1)" -lt 18 ]; then
+# Install Docker (handle conflicts with existing containerd)
+echo -e "${YELLOW}Checking Docker installation...${NC}"
+if command -v docker &> /dev/null; then
+    echo -e "${GREEN}Docker already installed${NC}"
+    # Ensure docker-compose is available
+    if ! command -v docker-compose &> /dev/null && ! docker compose version &> /dev/null 2>&1; then
+        echo -e "${YELLOW}Installing docker-compose...${NC}"
+        apt-get install -y docker-compose-plugin || apt-get install -y docker-compose || true
+    fi
+else
+    echo -e "${YELLOW}Installing Docker...${NC}"
+    # Try to install docker.io, but handle conflicts gracefully
+    if apt-get install -y docker.io 2>&1 | grep -q "Conflicts: containerd"; then
+        echo -e "${YELLOW}Docker conflict detected, trying to resolve...${NC}"
+        # Try removing old containerd first
+        apt-get remove -y containerd 2>/dev/null || true
+        # Try installing docker.io again
+        apt-get install -y docker.io || {
+            echo -e "${YELLOW}Docker.io installation failed, but Docker might already be available${NC}"
+            true
+        }
+    else
+        apt-get install -y docker.io || true
+    fi
+    
+    # Install docker-compose
+    if ! command -v docker-compose &> /dev/null && ! docker compose version &> /dev/null 2>&1; then
+        apt-get install -y docker-compose-plugin || apt-get install -y docker-compose || true
+    fi
+fi
+
+# Verify Docker is working
+if ! command -v docker &> /dev/null && ! docker --version &> /dev/null; then
+    echo -e "${RED}WARNING: Docker may not be properly installed, but continuing...${NC}"
+    echo -e "${YELLOW}You may need to install Docker manually if MilvusDB fails to start${NC}"
+fi
+
+# Install Node.js if not available
+if ! command -v node &> /dev/null; then
+    apt-get install -y nodejs npm || true
+fi
+
+# Install Node.js 18+ if not available or version is too old
+if ! command -v node &> /dev/null; then
     echo -e "${YELLOW}Installing Node.js 18...${NC}"
-    curl -fsSL https://deb.nodesource.com/setup_18.x | bash -
-    apt-get install -y nodejs
+    curl -fsSL https://deb.nodesource.com/setup_18.x | bash - || true
+    apt-get install -y nodejs || true
+elif [ "$(node -v | cut -d'v' -f2 | cut -d'.' -f1)" -lt 18 ] 2>/dev/null; then
+    echo -e "${YELLOW}Upgrading Node.js to version 18...${NC}"
+    curl -fsSL https://deb.nodesource.com/setup_18.x | bash - || true
+    apt-get install -y nodejs || true
 fi
 
 # Step 2: Clone repository
@@ -72,8 +117,20 @@ if [ ! -f docker-compose.yml ]; then
     exit 1
 fi
 
-# Start Milvus in background
-docker-compose up -d
+# Start Milvus in background (try docker-compose or docker compose)
+echo -e "${YELLOW}Starting MilvusDB containers...${NC}"
+if command -v docker-compose &> /dev/null; then
+    docker-compose up -d || {
+        echo -e "${YELLOW}docker-compose failed, trying docker compose...${NC}"
+        docker compose up -d || true
+    }
+elif docker compose version &> /dev/null 2>&1; then
+    docker compose up -d || true
+else
+    echo -e "${RED}ERROR: docker-compose not available!${NC}"
+    echo -e "${YELLOW}MilvusDB will not start. Please install Docker manually.${NC}"
+    echo -e "${YELLOW}Continuing with other services...${NC}"
+fi
 echo -e "${YELLOW}Waiting for MilvusDB to be ready...${NC}"
 sleep 30
 
@@ -103,9 +160,12 @@ VENV_PYTHON="$BACKEND_DIR/venv/bin/python3"
 VENV_PIP="$BACKEND_DIR/venv/bin/pip"
 
 # Upgrade pip and install dependencies
-$VENV_PIP install --upgrade pip setuptools wheel
-$VENV_PIP install -r requirements.txt
-$VENV_PIP install gunicorn  # Ensure Gunicorn is installed
+$VENV_PIP install --upgrade pip setuptools wheel || true
+$VENV_PIP install -r requirements.txt || {
+    echo -e "${YELLOW}Some packages failed to install, continuing...${NC}"
+    true
+}
+$VENV_PIP install gunicorn || true  # Ensure Gunicorn is installed
 
 # Step 5: Create necessary directories
 echo -e "${GREEN}[5/10]${NC} Creating directories..."
@@ -126,12 +186,16 @@ export CUDA_AVAILABLE=true
 
 # Run migrations (using full path to Python)
 cd "$BACKEND_DIR"
-$VENV_PYTHON -m flask db upgrade || $VENV_PYTHON -c "from src import db, create_app; app = create_app(); app.app_context().push(); db.create_all()"
+echo -e "${YELLOW}Running database migrations...${NC}"
+$VENV_PYTHON -m flask db upgrade 2>/dev/null || $VENV_PYTHON -c "from src import db, create_app; app = create_app(); app.app_context().push(); db.create_all()" || {
+    echo -e "${YELLOW}Database initialization had issues, but continuing...${NC}"
+    true
+}
 
 # Initialize base models
 if [ ! -f .base_models_initialized ]; then
     echo -e "${YELLOW}Initializing base models...${NC}"
-    $VENV_PYTHON scripts/init_base_models.py || echo "Base models initialization skipped"
+    $VENV_PYTHON scripts/init_base_models.py 2>/dev/null || echo "Base models initialization skipped"
     touch .base_models_initialized
 fi
 
@@ -140,14 +204,18 @@ echo -e "${GREEN}[7/10]${NC} Setting up Node.js frontend..."
 cd "$FRONTEND_DIR"
 
 # Install Node dependencies
-npm install --legacy-peer-deps
+echo -e "${YELLOW}Installing Node.js dependencies (this may take a few minutes)...${NC}"
+npm install --legacy-peer-deps || {
+    echo -e "${YELLOW}Some npm packages failed, but continuing...${NC}"
+    true
+}
 
-# Install and build speech-polyfill vendor package
+# Install and build speech-polyfill vendor package (optional)
 if [ -d "src/vendor/speech-polyfill" ]; then
-    echo -e "${YELLOW}Building speech-polyfill vendor package...${NC}"
+    echo -e "${YELLOW}Building speech-polyfill vendor package (optional)...${NC}"
     cd src/vendor/speech-polyfill
-    npm install --legacy-peer-deps || echo "Speech polyfill install failed, continuing..."
-    npm run build || echo "Speech polyfill build failed, continuing..."
+    npm install --legacy-peer-deps 2>/dev/null || echo "Speech polyfill install skipped"
+    npm run build 2>/dev/null || echo "Speech polyfill build skipped"
     cd "$FRONTEND_DIR"
 fi
 
