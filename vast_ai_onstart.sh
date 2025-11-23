@@ -552,26 +552,46 @@ echo -e "${YELLOW}Checking if ports are listening...${NC}"
 if command -v netstat &> /dev/null; then
     if netstat -tlnp 2>/dev/null | grep -q ":5000 "; then
         echo -e "${GREEN}✓ Port 5000 is listening${NC}"
+        # Show what's listening on port 5000
+        netstat -tlnp 2>/dev/null | grep ":5000 " || true
     else
         echo -e "${RED}✗ Port 5000 is NOT listening${NC}"
     fi
     
     if netstat -tlnp 2>/dev/null | grep -q ":3000 "; then
         echo -e "${GREEN}✓ Port 3000 is listening${NC}"
+        # Show what's listening on port 3000
+        netstat -tlnp 2>/dev/null | grep ":3000 " || true
     else
         echo -e "${YELLOW}⚠ Port 3000 is NOT listening (frontend may still be compiling)${NC}"
+        echo -e "${YELLOW}  Checking if frontend process is running...${NC}"
+        if pgrep -f "node.*react-scripts\|npm start" > /dev/null; then
+            echo -e "${YELLOW}  Frontend process is running but port not open yet. Wait 1-2 minutes.${NC}"
+        else
+            echo -e "${RED}  Frontend process is NOT running!${NC}"
+        fi
     fi
 elif command -v ss &> /dev/null; then
     if ss -tlnp 2>/dev/null | grep -q ":5000 "; then
         echo -e "${GREEN}✓ Port 5000 is listening${NC}"
+        # Show what's listening on port 5000
+        ss -tlnp 2>/dev/null | grep ":5000 " || true
     else
         echo -e "${RED}✗ Port 5000 is NOT listening${NC}"
     fi
     
     if ss -tlnp 2>/dev/null | grep -q ":3000 "; then
         echo -e "${GREEN}✓ Port 3000 is listening${NC}"
+        # Show what's listening on port 3000
+        ss -tlnp 2>/dev/null | grep ":3000 " || true
     else
         echo -e "${YELLOW}⚠ Port 3000 is NOT listening (frontend may still be compiling)${NC}"
+        echo -e "${YELLOW}  Checking if frontend process is running...${NC}"
+        if pgrep -f "node.*react-scripts\|npm start" > /dev/null; then
+            echo -e "${YELLOW}  Frontend process is running but port not open yet. Wait 1-2 minutes.${NC}"
+        else
+            echo -e "${RED}  Frontend process is NOT running!${NC}"
+        fi
     fi
 fi
 
@@ -607,15 +627,22 @@ echo ""
 echo "🧪 Test API (from your local machine):"
 echo "  curl http://${EXTERNAL_IP}:5000/api/base-models"
 echo ""
-echo "⚠️  IMPORTANT: If services are not accessible:"
-echo "  1. Check vast.ai port forwarding is enabled in template"
-echo "  2. Verify services are running:"
+echo "⚠️  IMPORTANT: If services are not accessible from browser:"
+echo "  1. Wait 2-5 minutes after instance start (frontend compilation takes time)"
+echo "  2. Check vast.ai port forwarding is enabled in template"
+echo "  3. Verify services are running:"
 echo "     • screen -r llm-rag-backend"
 echo "     • screen -r llm-rag-frontend"
-echo "  3. Check if ports are listening:"
+echo "  4. Check if ports are listening:"
 echo "     • netstat -tlnp | grep -E ':(5000|3000)'"
-echo "  4. Verify services bind to 0.0.0.0 (not localhost)"
-echo "  5. Check firewall: ufw status"
+echo "     • Should show 0.0.0.0:3000 and 0.0.0.0:5000 (NOT 127.0.0.1)"
+echo "  5. Test from inside instance first:"
+echo "     • curl http://localhost:5000/api/base-models"
+echo "     • curl http://localhost:3000"
+echo "  6. Check frontend logs for compilation errors:"
+echo "     • tail -f /tmp/frontend.log"
+echo "  7. Verify services bind to 0.0.0.0 (not localhost)"
+echo "  8. Check firewall: ufw status"
 echo ""
 echo "🔧 Troubleshooting Commands:"
 echo "  # Check backend logs"
