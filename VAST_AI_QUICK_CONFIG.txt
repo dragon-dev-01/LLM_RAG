@@ -40,33 +40,9 @@ REACT_APP_GOOGLE_CLIENT_ID=
 NODE_ENV=production
 
 ┌─────────────────────────────────────────────────────────────┐
-│ 5. ON-START SCRIPT (copy entire block below)               │
+│ 5. ON-START SCRIPT                                           │
 └─────────────────────────────────────────────────────────────┘
-
-#!/bin/bash
-set -e
-echo "🚀 LLM RAG Platform - Auto Deployment"
-export DEBIAN_FRONTEND=noninteractive
-apt-get update -y
-apt-get install -y python3 python3-pip python3-venv git curl wget build-essential docker.io docker-compose nodejs npm screen sqlite3 libpq-dev poppler-utils tesseract-ocr libtesseract-dev libgl1-mesa-glx libglib2.0-0
-curl -fsSL https://deb.nodesource.com/setup_18.x | bash - && apt-get install -y nodejs
-cd /root && git clone https://github.com/dragon-dev-01/LLM_RAG.git LLM_RAG || (cd LLM_RAG && git pull)
-cd /root/LLM_RAG/LLM-Finetuner-main && docker-compose up -d
-sleep 30
-for i in {1..30}; do curl -f http://localhost:9091/healthz && break || sleep 2; done || true
-cd /root/LLM_RAG/LLM-Finetuner-main && python3 -m venv venv && /root/LLM_RAG/LLM-Finetuner-main/venv/bin/pip install --upgrade pip setuptools wheel && /root/LLM_RAG/LLM-Finetuner-main/venv/bin/pip install -r requirements.txt gunicorn
-mkdir -p /root/LLM_RAG/LLM-Finetuner-main/uploads /root/LLM_RAG/LLM-Finetuner-main/adapters /root/LLM_RAG/LLM-Finetuner-main/logs /root/LLM_RAG/LLM-Finetuner-main/instance
-export DATABASE_URL=sqlite:///./instance/llm_rag.db && export MILVUS_HOST=localhost && export MILVUS_PORT=19530 && export BYPASS_LOGIN=true && export FLASK_APP=app_new.py && export PORT=5000
-cd /root/LLM_RAG/LLM-Finetuner-main && /root/LLM_RAG/LLM-Finetuner-main/venv/bin/python3 -m flask db upgrade || /root/LLM_RAG/LLM-Finetuner-main/venv/bin/python3 -c "from src import db, create_app; app = create_app(); app.app_context().push(); db.create_all()"
-cd /root/LLM_RAG/LLM-Finetuner-main && /root/LLM_RAG/LLM-Finetuner-main/venv/bin/python3 scripts/init_base_models.py || touch .base_models_initialized
-cd /root/LLM_RAG/LLM-Finetuner-FE-main && npm install --legacy-peer-deps
-cd /root/LLM_RAG/LLM-Finetuner-FE-main && echo "REACT_APP_API_HOST=http://localhost:5000" > .env && echo "REACT_APP_BYPASS_LOGIN=true" >> .env && echo "PORT=3000" >> .env
-cd /root/LLM_RAG/LLM-Finetuner-main && screen -dmS backend bash -c "export DATABASE_URL=sqlite:///./instance/llm_rag.db && export MILVUS_HOST=localhost && export MILVUS_PORT=19530 && export BYPASS_LOGIN=true && export PORT=5000 && /root/LLM_RAG/LLM-Finetuner-main/venv/bin/gunicorn -w 4 -b 0.0.0.0:5000 --timeout 300 app_new:app"
-sleep 5
-cd /root/LLM_RAG/LLM-Finetuner-FE-main && screen -dmS frontend bash -c "BROWSER=none npm start"
-sleep 10
-echo "✅ Deployment Complete! Backend: http://localhost:5000 | Frontend: http://localhost:3000"
-exec tail -f /dev/null
+(LEAVE EMPTY - We'll deploy manually after instance starts)
 
 ┌─────────────────────────────────────────────────────────────┐
 │ 6. EXTRA FILTERS (optional, for GPU selection)            │
@@ -84,20 +60,111 @@ Minimum: 50 GB
 Recommended: 100 GB
 
 ═══════════════════════════════════════════════════════════════
-AFTER DEPLOYMENT
+AFTER CREATING TEMPLATE - MANUAL DEPLOYMENT STEPS
 ═══════════════════════════════════════════════════════════════
 
-✅ Services will be available at:
-   • Backend API:  http://<INSTANCE_IP>:5000
-   • Frontend UI:  http://<INSTANCE_IP>:3000
-   • Milvus Health: http://<INSTANCE_IP>:9091/healthz
+📋 STEP 1: Create Template
+   • Fill in all fields above (leave On-start Script EMPTY)
+   • Click "Save Template"
+   • Select a GPU instance and click "RENT"
 
-📋 To view logs (SSH into instance):
+📋 STEP 2: Connect to Instance
+   • Wait for instance to start (1-2 minutes)
+   • Copy SSH command from vast.ai dashboard
+   • SSH into the instance:
+     ssh -p <PORT> root@<IP>
+
+📋 STEP 3: Run Deployment Script
+   • Once connected, run this command:
+   
+   curl -fsSL https://raw.githubusercontent.com/dragon-dev-01/LLM_RAG/main/vast_ai_onstart.sh | bash
+   
+   OR manually copy-paste the deployment commands (see below)
+
+📋 STEP 4: Wait for Deployment
+   • First deployment takes 5-10 minutes
+   • Watch for "✅ Deployment Complete!" message
+   • Services will be available at:
+     • Backend API:  http://<INSTANCE_IP>:5000
+     • Frontend UI:  http://<INSTANCE_IP>:3000
+
+═══════════════════════════════════════════════════════════════
+MANUAL DEPLOYMENT COMMANDS (if script doesn't work)
+═══════════════════════════════════════════════════════════════
+
+# Install dependencies
+apt-get update -y
+apt-get install -y python3 python3-pip python3-venv git curl wget build-essential docker.io docker-compose nodejs npm screen sqlite3 libpq-dev poppler-utils tesseract-ocr libtesseract-dev libgl1-mesa-glx libglib2.0-0
+curl -fsSL https://deb.nodesource.com/setup_18.x | bash - && apt-get install -y nodejs
+
+# Clone repository
+cd /root && git clone https://github.com/dragon-dev-01/LLM_RAG.git LLM_RAG || (cd LLM_RAG && git pull)
+
+# Start MilvusDB
+cd /root/LLM_RAG/LLM-Finetuner-main && docker-compose up -d
+sleep 30
+
+# Setup Python backend
+cd /root/LLM_RAG/LLM-Finetuner-main
+python3 -m venv venv
+/root/LLM_RAG/LLM-Finetuner-main/venv/bin/pip install --upgrade pip setuptools wheel
+/root/LLM_RAG/LLM-Finetuner-main/venv/bin/pip install -r requirements.txt gunicorn
+
+# Create directories
+mkdir -p uploads adapters logs instance
+
+# Initialize database
+export DATABASE_URL=sqlite:///./instance/llm_rag.db
+export MILVUS_HOST=localhost
+export MILVUS_PORT=19530
+export BYPASS_LOGIN=true
+export FLASK_APP=app_new.py
+export PORT=5000
+cd /root/LLM_RAG/LLM-Finetuner-main
+/root/LLM_RAG/LLM-Finetuner-main/venv/bin/python3 -m flask db upgrade || /root/LLM_RAG/LLM-Finetuner-main/venv/bin/python3 -c "from src import db, create_app; app = create_app(); app.app_context().push(); db.create_all()"
+/root/LLM_RAG/LLM-Finetuner-main/venv/bin/python3 scripts/init_base_models.py || touch .base_models_initialized
+
+# Setup frontend
+cd /root/LLM_RAG/LLM-Finetuner-FE-main
+npm install --legacy-peer-deps
+echo "REACT_APP_API_HOST=http://localhost:5000" > .env
+echo "REACT_APP_BYPASS_LOGIN=true" >> .env
+echo "PORT=3000" >> .env
+
+# Start backend
+cd /root/LLM_RAG/LLM-Finetuner-main
+screen -dmS backend bash -c "export DATABASE_URL=sqlite:///./instance/llm_rag.db && export MILVUS_HOST=localhost && export MILVUS_PORT=19530 && export BYPASS_LOGIN=true && export PORT=5000 && /root/LLM_RAG/LLM-Finetuner-main/venv/bin/gunicorn -w 4 -b 0.0.0.0:5000 --timeout 300 app_new:app"
+
+# Start frontend
+sleep 5
+cd /root/LLM_RAG/LLM-Finetuner-FE-main
+screen -dmS frontend bash -c "BROWSER=none npm start"
+
+# Check status
+sleep 10
+echo "✅ Deployment Complete!"
+echo "Backend: http://localhost:5000"
+echo "Frontend: http://localhost:3000"
+
+═══════════════════════════════════════════════════════════════
+USEFUL COMMANDS
+═══════════════════════════════════════════════════════════════
+
+📋 View logs:
    screen -r backend   # Backend logs
    screen -r frontend # Frontend logs
+   (Press Ctrl+A then D to detach)
 
 🧪 Test API:
-   curl http://<INSTANCE_IP>:5000/api/base-models
+   curl http://localhost:5000/api/base-models
+
+🔄 Restart services:
+   screen -r backend   # Then Ctrl+C, restart command
+   screen -r frontend   # Then Ctrl+C, restart command
+
+🛑 Stop services:
+   pkill -f gunicorn
+   pkill -f "npm start"
 
 ═══════════════════════════════════════════════════════════════
 

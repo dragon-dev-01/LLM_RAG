@@ -45,34 +45,7 @@ NODE_ENV=production
 ───────────────────────────────────────────
 5. ON-START SCRIPT
 ───────────────────────────────────────────
-Copy the entire contents of vast_ai_onstart.sh from the repository root.
-
-Or use this inline version:
-
-#!/bin/bash
-set -e
-echo "🚀 LLM RAG Platform - Auto Deployment"
-export DEBIAN_FRONTEND=noninteractive
-apt-get update -y
-apt-get install -y python3 python3-pip python3-venv git curl wget build-essential docker.io docker-compose nodejs npm screen sqlite3 libpq-dev poppler-utils tesseract-ocr libtesseract-dev libgl1-mesa-glx libglib2.0-0
-curl -fsSL https://deb.nodesource.com/setup_18.x | bash - && apt-get install -y nodejs
-cd /root && git clone https://github.com/dragon-dev-01/LLM_RAG.git LLM_RAG || (cd LLM_RAG && git pull)
-cd /root/LLM_RAG/LLM-Finetuner-main && docker-compose up -d
-sleep 30
-for i in {1..30}; do curl -f http://localhost:9091/healthz && break || sleep 2; done || true
-cd /root/LLM_RAG/LLM-Finetuner-main && python3 -m venv venv && /root/LLM_RAG/LLM-Finetuner-main/venv/bin/pip install --upgrade pip setuptools wheel && /root/LLM_RAG/LLM-Finetuner-main/venv/bin/pip install -r requirements.txt gunicorn
-mkdir -p /root/LLM_RAG/LLM-Finetuner-main/uploads /root/LLM_RAG/LLM-Finetuner-main/adapters /root/LLM_RAG/LLM-Finetuner-main/logs /root/LLM_RAG/LLM-Finetuner-main/instance
-export DATABASE_URL=sqlite:///./instance/llm_rag.db && export MILVUS_HOST=localhost && export MILVUS_PORT=19530 && export BYPASS_LOGIN=true && export FLASK_APP=app_new.py && export PORT=5000
-cd /root/LLM_RAG/LLM-Finetuner-main && /root/LLM_RAG/LLM-Finetuner-main/venv/bin/python3 -m flask db upgrade || /root/LLM_RAG/LLM-Finetuner-main/venv/bin/python3 -c "from src import db, create_app; app = create_app(); app.app_context().push(); db.create_all()"
-cd /root/LLM_RAG/LLM-Finetuner-main && /root/LLM_RAG/LLM-Finetuner-main/venv/bin/python3 scripts/init_base_models.py || touch .base_models_initialized
-cd /root/LLM_RAG/LLM-Finetuner-FE-main && npm install --legacy-peer-deps
-cd /root/LLM_RAG/LLM-Finetuner-FE-main && echo "REACT_APP_API_HOST=http://localhost:5000" > .env && echo "REACT_APP_BYPASS_LOGIN=true" >> .env && echo "PORT=3000" >> .env
-cd /root/LLM_RAG/LLM-Finetuner-main && screen -dmS backend bash -c "export DATABASE_URL=sqlite:///./instance/llm_rag.db && export MILVUS_HOST=localhost && export MILVUS_PORT=19530 && export BYPASS_LOGIN=true && export PORT=5000 && /root/LLM_RAG/LLM-Finetuner-main/venv/bin/gunicorn -w 4 -b 0.0.0.0:5000 --timeout 300 app_new:app"
-sleep 5
-cd /root/LLM_RAG/LLM-Finetuner-FE-main && screen -dmS frontend bash -c "BROWSER=none npm start"
-sleep 10
-echo "✅ Deployment Complete! Backend: http://localhost:5000 | Frontend: http://localhost:3000"
-exec tail -f /dev/null
+LEAVE EMPTY - We'll deploy manually after instance starts
 
 ───────────────────────────────────────────
 6. LAUNCH MODE
@@ -102,48 +75,125 @@ Jupyter: (Optional - not required)
 SSH: Enabled (Required for debugging)
 
 ───────────────────────────────────────────
-10. QUICK REFERENCE
+10. AFTER CREATING TEMPLATE - DEPLOYMENT STEPS
 ───────────────────────────────────────────
 
-After instance starts:
-  • Backend API:  http://<INSTANCE_IP>:5000
-  • Frontend UI:  http://<INSTANCE_IP>:3000
-  • Milvus Health: http://<INSTANCE_IP>:9091/healthz
+STEP 1: Create Template
+  ✓ Fill in all fields above (leave On-start Script EMPTY)
+  ✓ Click "Save Template"
+  ✓ Select a GPU instance and click "RENT"
+
+STEP 2: Connect to Instance
+  ✓ Wait for instance to start (1-2 minutes)
+  ✓ Copy SSH command from vast.ai dashboard
+  ✓ SSH into the instance:
+    ssh -p <PORT> root@<IP>
+
+STEP 3: Run Deployment
+  Option A - Use deployment script (recommended):
+    curl -fsSL https://raw.githubusercontent.com/dragon-dev-01/LLM_RAG/main/vast_ai_onstart.sh | bash
+
+  Option B - Manual deployment (see commands below)
+
+STEP 4: Wait for Completion
+  ✓ First deployment takes 5-10 minutes
+  ✓ Watch for "✅ Deployment Complete!" message
+  ✓ Services available at:
+    • Backend API:  http://<INSTANCE_IP>:5000
+    • Frontend UI:  http://<INSTANCE_IP>:3000
+    • Milvus Health: http://<INSTANCE_IP>:9091/healthz
+
+───────────────────────────────────────────
+MANUAL DEPLOYMENT COMMANDS
+───────────────────────────────────────────
+
+# Install system dependencies
+apt-get update -y
+apt-get install -y python3 python3-pip python3-venv git curl wget build-essential docker.io docker-compose nodejs npm screen sqlite3 libpq-dev poppler-utils tesseract-ocr libtesseract-dev libgl1-mesa-glx libglib2.0-0
+curl -fsSL https://deb.nodesource.com/setup_18.x | bash - && apt-get install -y nodejs
+
+# Clone repository
+cd /root && git clone https://github.com/dragon-dev-01/LLM_RAG.git LLM_RAG || (cd LLM_RAG && git pull)
+
+# Start MilvusDB
+cd /root/LLM_RAG/LLM-Finetuner-main && docker-compose up -d
+sleep 30
+
+# Setup Python backend
+cd /root/LLM_RAG/LLM-Finetuner-main
+python3 -m venv venv
+/root/LLM_RAG/LLM-Finetuner-main/venv/bin/pip install --upgrade pip setuptools wheel
+/root/LLM_RAG/LLM-Finetuner-main/venv/bin/pip install -r requirements.txt gunicorn
+
+# Create directories
+mkdir -p uploads adapters logs instance
+
+# Initialize database
+export DATABASE_URL=sqlite:///./instance/llm_rag.db
+export MILVUS_HOST=localhost
+export MILVUS_PORT=19530
+export BYPASS_LOGIN=true
+export FLASK_APP=app_new.py
+export PORT=5000
+cd /root/LLM_RAG/LLM-Finetuner-main
+/root/LLM_RAG/LLM-Finetuner-main/venv/bin/python3 -m flask db upgrade || /root/LLM_RAG/LLM-Finetuner-main/venv/bin/python3 -c "from src import db, create_app; app = create_app(); app.app_context().push(); db.create_all()"
+/root/LLM_RAG/LLM-Finetuner-main/venv/bin/python3 scripts/init_base_models.py || touch .base_models_initialized
+
+# Setup frontend
+cd /root/LLM_RAG/LLM-Finetuner-FE-main
+npm install --legacy-peer-deps
+echo "REACT_APP_API_HOST=http://localhost:5000" > .env
+echo "REACT_APP_BYPASS_LOGIN=true" >> .env
+echo "PORT=3000" >> .env
+
+# Start backend
+cd /root/LLM_RAG/LLM-Finetuner-main
+screen -dmS backend bash -c "export DATABASE_URL=sqlite:///./instance/llm_rag.db && export MILVUS_HOST=localhost && export MILVUS_PORT=19530 && export BYPASS_LOGIN=true && export PORT=5000 && /root/LLM_RAG/LLM-Finetuner-main/venv/bin/gunicorn -w 4 -b 0.0.0.0:5000 --timeout 300 app_new:app"
+
+# Start frontend
+sleep 5
+cd /root/LLM_RAG/LLM-Finetuner-FE-main
+screen -dmS frontend bash -c "BROWSER=none npm start"
+
+# Check status
+sleep 10
+echo "✅ Deployment Complete!"
+echo "Backend: http://localhost:5000"
+echo "Frontend: http://localhost:3000"
+
+───────────────────────────────────────────
+USEFUL COMMANDS
+───────────────────────────────────────────
 
 View logs:
-  • SSH into instance
-  • screen -r backend  (backend logs)
-  • screen -r frontend (frontend logs)
+  screen -r backend   # Backend logs (Ctrl+A then D to detach)
+  screen -r frontend  # Frontend logs
 
 Test API:
-  curl http://<INSTANCE_IP>:5000/api/base-models
+  curl http://localhost:5000/api/base-models
+
+Restart services:
+  screen -r backend   # Ctrl+C, then restart command
+  screen -r frontend # Ctrl+C, then restart command
+
+Stop services:
+  pkill -f gunicorn
+  pkill -f "npm start"
 
 ───────────────────────────────────────────
 NOTES
 ───────────────────────────────────────────
 
-1. The On-start script automatically:
-   - Installs all dependencies
-   - Clones the repository
-   - Starts MilvusDB
-   - Initializes the database
-   - Starts backend and frontend
-
-2. First startup takes 5-10 minutes for:
+1. First deployment takes 5-10 minutes for:
    - System package installation
    - Python/Node dependencies
    - MilvusDB initialization
 
-3. Services run in screen sessions:
-   - Backend: screen -r backend
-   - Frontend: screen -r frontend
+2. Services run in screen sessions for easy log access
 
-4. Bypass login is enabled by default for testing.
+3. Bypass login is enabled by default for testing.
    To use Google OAuth, set BYPASS_LOGIN=false and
    provide REACT_APP_GOOGLE_CLIENT_ID.
-
-5. The script keeps running (tail -f /dev/null) as
-   required by vast.ai to keep the instance active.
 
 ==========================================
 
