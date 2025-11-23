@@ -82,20 +82,33 @@ if ! command -v docker &> /dev/null && ! docker --version &> /dev/null; then
     echo -e "${YELLOW}You may need to install Docker manually if MilvusDB fails to start${NC}"
 fi
 
-# Install Node.js if not available
+# Install Node.js 18+ (ensure it's properly installed)
+echo -e "${YELLOW}Installing/Upgrading Node.js 18...${NC}"
 if ! command -v node &> /dev/null; then
-    apt-get install -y nodejs npm || true
-fi
-
-# Install Node.js 18+ if not available or version is too old
-if ! command -v node &> /dev/null; then
-    echo -e "${YELLOW}Installing Node.js 18...${NC}"
+    echo -e "${YELLOW}Node.js not found, installing...${NC}"
     curl -fsSL https://deb.nodesource.com/setup_18.x | bash - || true
-    apt-get install -y nodejs || true
+    apt-get install -y nodejs npm || true
 elif [ "$(node -v | cut -d'v' -f2 | cut -d'.' -f1)" -lt 18 ] 2>/dev/null; then
     echo -e "${YELLOW}Upgrading Node.js to version 18...${NC}"
     curl -fsSL https://deb.nodesource.com/setup_18.x | bash - || true
     apt-get install -y nodejs || true
+fi
+
+# Verify Node.js and npm are available
+if command -v node &> /dev/null; then
+    echo -e "${GREEN}✓ Node.js installed: $(node -v)${NC}"
+else
+    echo -e "${RED}✗ Node.js installation failed!${NC}"
+    echo -e "${YELLOW}Trying alternative installation method...${NC}"
+    curl -fsSL https://deb.nodesource.com/setup_18.x | bash - || true
+    apt-get install -y nodejs npm || true
+fi
+
+if command -v npm &> /dev/null; then
+    echo -e "${GREEN}✓ npm installed: $(npm -v)${NC}"
+else
+    echo -e "${RED}✗ npm not found! Installing...${NC}"
+    apt-get install -y npm || true
 fi
 
 # Step 2: Clone repository
@@ -169,7 +182,10 @@ $VENV_PIP install gunicorn || true  # Ensure Gunicorn is installed
 
 # Step 5: Create necessary directories
 echo -e "${GREEN}[5/10]${NC} Creating directories..."
+cd "$BACKEND_DIR"
 mkdir -p uploads adapters logs instance
+# Ensure instance directory has proper permissions
+chmod 755 instance || true
 
 # Step 6: Initialize database
 echo -e "${GREEN}[6/10]${NC} Initializing database..."
@@ -187,9 +203,17 @@ export CUDA_AVAILABLE=true
 # Run migrations (using full path to Python)
 cd "$BACKEND_DIR"
 echo -e "${YELLOW}Running database migrations...${NC}"
-$VENV_PYTHON -m flask db upgrade 2>/dev/null || $VENV_PYTHON -c "from src import db, create_app; app = create_app(); app.app_context().push(); db.create_all()" || {
-    echo -e "${YELLOW}Database initialization had issues, but continuing...${NC}"
-    true
+# Ensure we're in the right directory and instance folder exists
+export DATABASE_URL=sqlite:///./instance/llm_rag.db
+mkdir -p instance
+chmod 755 instance
+# Try flask db upgrade first
+$VENV_PYTHON -m flask db upgrade 2>/dev/null || {
+    echo -e "${YELLOW}Flask migration failed, trying direct database creation...${NC}"
+    $VENV_PYTHON -c "from src import db, create_app; app = create_app(); app.app_context().push(); db.create_all()" || {
+        echo -e "${YELLOW}Database initialization had issues, but continuing...${NC}"
+        true
+    }
 }
 
 # Initialize base models
@@ -264,17 +288,55 @@ cd "$FRONTEND_DIR"
 lsof -ti:3000 | xargs kill -9 || true
 sleep 2
 
-# Start frontend in screen
-screen -dmS llm-rag-frontend bash -c "
-    cd $FRONTEND_DIR
-    export REACT_APP_API_HOST=http://localhost:5000
-    export REACT_APP_BYPASS_LOGIN=true
-    export PORT=3000
-    BROWSER=none npm start
-"
+# Start frontend in screen (verify npm is available first)
+if command -v npm &> /dev/null; then
+    screen -dmS llm-rag-frontend bash -c "
+        cd $FRONTEND_DIR
+        export REACT_APP_API_HOST=http://localhost:5000
+        export REACT_APP_BYPASS_LOGIN=true
+        export PORT=3000
+        BROWSER=none npm start
+    "
+    echo -e "${GREEN}Frontend started in screen session${NC}"
+else
+    echo -e "${RED}ERROR: npm not found! Frontend cannot start.${NC}"
+    echo -e "${YELLOW}Please install Node.js manually:${NC}"
+    echo -e "${YELLOW}  curl -fsSL https://deb.nodesource.com/setup_18.x | bash -${NC}"
+    echo -e "${YELLOW}  apt-get install -y nodejs${NC}"
+fi
 
 # Wait for frontend to start
 sleep 10
+
+# Verify services are running
+echo ""
+echo "=========================================="
+echo -e "${GREEN}Verifying services...${NC}"
+echo "=========================================="
+
+# Check backend
+if curl -f http://localhost:5000/api/base-models &>/dev/null; then
+    echo -e "${GREEN}✓ Backend is running on port 5000${NC}"
+else
+    echo -e "${YELLOW}⚠ Backend may not be running. Check: screen -r llm-rag-backend${NC}"
+fi
+
+# Check frontend
+if curl -f http://localhost:3000 &>/dev/null; then
+    echo -e "${GREEN}✓ Frontend is running on port 3000${NC}"
+else
+    echo -e "${YELLOW}⚠ Frontend may not be running. Check: screen -r llm-rag-frontend${NC}"
+fi
+
+# Check Milvus
+if curl -f http://localhost:9091/healthz &>/dev/null; then
+    echo -e "${GREEN}✓ MilvusDB is running${NC}"
+else
+    echo -e "${YELLOW}⚠ MilvusDB may not be running${NC}"
+fi
+
+# Get external IP
+EXTERNAL_IP=$(curl -s ifconfig.me || curl -s ipinfo.io/ip || echo "YOUR_INSTANCE_IP")
 
 # Final status check
 echo ""
@@ -287,6 +349,10 @@ echo "  • MilvusDB:     http://localhost:9091/healthz"
 echo "  • Backend API:  http://localhost:5000"
 echo "  • Frontend UI:  http://localhost:3000"
 echo ""
+echo "🌐 External Access (from your browser):"
+echo "  • Backend API:  http://${EXTERNAL_IP}:5000"
+echo "  • Frontend UI:  http://${EXTERNAL_IP}:3000"
+echo ""
 echo "📊 Screen Sessions:"
 echo "  • Backend:  screen -r llm-rag-backend"
 echo "  • Frontend: screen -r llm-rag-frontend"
@@ -295,8 +361,16 @@ echo "🔍 Check logs:"
 echo "  • Backend:  screen -r llm-rag-backend"
 echo "  • Frontend: screen -r llm-rag-frontend"
 echo ""
-echo "🧪 Test API:"
+echo "🧪 Test API (from instance):"
 echo "  curl http://localhost:5000/api/base-models"
+echo ""
+echo "🧪 Test API (from your local machine):"
+echo "  curl http://${EXTERNAL_IP}:5000/api/base-models"
+echo ""
+echo "⚠️  IMPORTANT: If services are not accessible:"
+echo "  1. Check vast.ai port forwarding is enabled"
+echo "  2. Verify services are running: screen -r llm-rag-backend"
+echo "  3. Check firewall: ufw status"
 echo ""
 echo "=========================================="
 echo ""
