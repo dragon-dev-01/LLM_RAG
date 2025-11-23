@@ -82,33 +82,49 @@ if ! command -v docker &> /dev/null && ! docker --version &> /dev/null; then
     echo -e "${YELLOW}You may need to install Docker manually if MilvusDB fails to start${NC}"
 fi
 
-# Install Node.js 18+ (ensure it's properly installed)
+# Install Node.js 18+ (handle conflicts with old versions)
 echo -e "${YELLOW}Installing/Upgrading Node.js 18...${NC}"
-if ! command -v node &> /dev/null; then
-    echo -e "${YELLOW}Node.js not found, installing...${NC}"
+
+# Check current Node.js version
+CURRENT_NODE_VERSION=$(node -v 2>/dev/null | cut -d'v' -f2 | cut -d'.' -f1 || echo "0")
+
+if [ "$CURRENT_NODE_VERSION" -lt 18 ] 2>/dev/null || [ "$CURRENT_NODE_VERSION" = "0" ]; then
+    echo -e "${YELLOW}Removing old Node.js if exists...${NC}"
+    # Remove old nodejs and npm to avoid conflicts
+    apt-get remove -y nodejs npm 2>/dev/null || true
+    apt-get purge -y nodejs npm 2>/dev/null || true
+    
+    echo -e "${YELLOW}Installing Node.js 18 from NodeSource...${NC}"
     curl -fsSL https://deb.nodesource.com/setup_18.x | bash - || true
-    apt-get install -y nodejs npm || true
-elif [ "$(node -v | cut -d'v' -f2 | cut -d'.' -f1)" -lt 18 ] 2>/dev/null; then
-    echo -e "${YELLOW}Upgrading Node.js to version 18...${NC}"
-    curl -fsSL https://deb.nodesource.com/setup_18.x | bash - || true
-    apt-get install -y nodejs || true
+    apt-get install -y nodejs || {
+        echo -e "${YELLOW}NodeSource installation failed, trying Ubuntu repository...${NC}"
+        apt-get install -y nodejs npm || true
+    }
 fi
 
 # Verify Node.js and npm are available
 if command -v node &> /dev/null; then
-    echo -e "${GREEN}✓ Node.js installed: $(node -v)${NC}"
+    NODE_VER=$(node -v)
+    echo -e "${GREEN}✓ Node.js installed: $NODE_VER${NC}"
+    
+    # Check if npm is available
+    if ! command -v npm &> /dev/null; then
+        echo -e "${YELLOW}npm not found, installing...${NC}"
+        apt-get install -y npm || {
+            # If npm conflicts, try installing just npm
+            apt-get install -y --fix-broken npm || true
+        }
+    fi
+    
+    if command -v npm &> /dev/null; then
+        echo -e "${GREEN}✓ npm installed: $(npm -v)${NC}"
+    else
+        echo -e "${YELLOW}⚠ npm installation had issues, but continuing...${NC}"
+    fi
 else
     echo -e "${RED}✗ Node.js installation failed!${NC}"
-    echo -e "${YELLOW}Trying alternative installation method...${NC}"
-    curl -fsSL https://deb.nodesource.com/setup_18.x | bash - || true
+    echo -e "${YELLOW}Trying alternative: installing from Ubuntu repository...${NC}"
     apt-get install -y nodejs npm || true
-fi
-
-if command -v npm &> /dev/null; then
-    echo -e "${GREEN}✓ npm installed: $(npm -v)${NC}"
-else
-    echo -e "${RED}✗ npm not found! Installing...${NC}"
-    apt-get install -y npm || true
 fi
 
 # Step 2: Clone repository
@@ -184,8 +200,15 @@ $VENV_PIP install gunicorn || true  # Ensure Gunicorn is installed
 echo -e "${GREEN}[5/10]${NC} Creating directories..."
 cd "$BACKEND_DIR"
 mkdir -p uploads adapters logs instance
-# Ensure instance directory has proper permissions
+# Ensure instance directory has proper permissions and exists
 chmod 755 instance || true
+touch instance/.gitkeep || true
+# Verify directory was created
+if [ ! -d "instance" ]; then
+    echo -e "${RED}ERROR: Failed to create instance directory!${NC}"
+    mkdir -p instance
+    chmod 755 instance
+fi
 
 # Step 6: Initialize database
 echo -e "${GREEN}[6/10]${NC} Initializing database..."
@@ -203,18 +226,57 @@ export CUDA_AVAILABLE=true
 # Run migrations (using full path to Python)
 cd "$BACKEND_DIR"
 echo -e "${YELLOW}Running database migrations...${NC}"
+
 # Ensure we're in the right directory and instance folder exists
 export DATABASE_URL=sqlite:///./instance/llm_rag.db
+export MILVUS_HOST=localhost
+export MILVUS_PORT=19530
+export BYPASS_LOGIN=true
+export FLASK_APP=app_new.py
+export PORT=5000
+export CUDA_AVAILABLE=true
+
+# Ensure instance directory exists and is writable
 mkdir -p instance
 chmod 755 instance
+touch instance/.gitkeep || true
+
+# Verify we can write to the instance directory
+if [ ! -w "instance" ]; then
+    echo -e "${RED}ERROR: instance directory is not writable!${NC}"
+    chmod 755 instance
+fi
+
 # Try flask db upgrade first
-$VENV_PYTHON -m flask db upgrade 2>/dev/null || {
+echo -e "${YELLOW}Attempting Flask database migration...${NC}"
+$VENV_PYTHON -m flask db upgrade 2>&1 | head -20 || {
     echo -e "${YELLOW}Flask migration failed, trying direct database creation...${NC}"
-    $VENV_PYTHON -c "from src import db, create_app; app = create_app(); app.app_context().push(); db.create_all()" || {
+    $VENV_PYTHON -c "
+import os
+os.chdir('$BACKEND_DIR')
+from src import db, create_app
+app = create_app()
+with app.app_context():
+    try:
+        db.create_all()
+        print('Database created successfully')
+    except Exception as e:
+        print(f'Database creation error: {e}')
+        import traceback
+        traceback.print_exc()
+" 2>&1 || {
         echo -e "${YELLOW}Database initialization had issues, but continuing...${NC}"
         true
     }
 }
+
+# Verify database file was created
+if [ -f "instance/llm_rag.db" ]; then
+    echo -e "${GREEN}✓ Database file created: instance/llm_rag.db${NC}"
+    chmod 644 instance/llm_rag.db || true
+else
+    echo -e "${YELLOW}⚠ Database file not found, but continuing...${NC}"
+fi
 
 # Initialize base models
 if [ ! -f .base_models_initialized ]; then
@@ -262,6 +324,20 @@ pkill -f gunicorn || true
 sleep 2
 
 # Start backend in screen (using full path to gunicorn)
+echo -e "${YELLOW}Starting backend server...${NC}"
+
+# Kill any existing gunicorn processes
+pkill -f gunicorn || true
+sleep 2
+
+# Ensure database exists before starting
+cd "$BACKEND_DIR"
+if [ ! -f "instance/llm_rag.db" ]; then
+    echo -e "${YELLOW}Database not found, creating it now...${NC}"
+    export DATABASE_URL=sqlite:///./instance/llm_rag.db
+    $VENV_PYTHON -c "from src import db, create_app; app = create_app(); app.app_context().push(); db.create_all()" 2>/dev/null || true
+fi
+
 screen -dmS llm-rag-backend bash -c "
     cd $BACKEND_DIR
     export DATABASE_URL=sqlite:///./instance/llm_rag.db
@@ -274,8 +350,9 @@ screen -dmS llm-rag-backend bash -c "
     export PORT=5000
     export CUDA_AVAILABLE=true
     export FLASK_APP=app_new.py
-    $BACKEND_DIR/venv/bin/gunicorn -w 4 -b 0.0.0.0:5000 --timeout 300 --access-logfile - --error-logfile - app_new:app
+    $BACKEND_DIR/venv/bin/gunicorn -w 4 -b 0.0.0.0:5000 --timeout 300 --access-logfile - --error-logfile - app_new:app 2>&1 | tee /tmp/backend.log
 "
+echo -e "${GREEN}Backend started in screen session${NC}"
 
 # Wait for backend to start
 sleep 5
@@ -290,19 +367,32 @@ sleep 2
 
 # Start frontend in screen (verify npm is available first)
 if command -v npm &> /dev/null; then
+    echo -e "${YELLOW}Starting frontend with npm...${NC}"
+    # Ensure .env file exists
+    cd "$FRONTEND_DIR"
+    if [ ! -f .env ]; then
+        echo "REACT_APP_API_HOST=http://localhost:5000" > .env
+        echo "REACT_APP_BYPASS_LOGIN=true" >> .env
+        echo "PORT=3000" >> .env
+    fi
+    
     screen -dmS llm-rag-frontend bash -c "
         cd $FRONTEND_DIR
         export REACT_APP_API_HOST=http://localhost:5000
         export REACT_APP_BYPASS_LOGIN=true
         export PORT=3000
-        BROWSER=none npm start
+        BROWSER=none npm start 2>&1 | tee /tmp/frontend.log
     "
     echo -e "${GREEN}Frontend started in screen session${NC}"
+    echo -e "${YELLOW}Note: Frontend may take 1-2 minutes to compile${NC}"
 else
     echo -e "${RED}ERROR: npm not found! Frontend cannot start.${NC}"
-    echo -e "${YELLOW}Please install Node.js manually:${NC}"
-    echo -e "${YELLOW}  curl -fsSL https://deb.nodesource.com/setup_18.x | bash -${NC}"
-    echo -e "${YELLOW}  apt-get install -y nodejs${NC}"
+    echo -e "${YELLOW}Attempting to install npm...${NC}"
+    apt-get install -y npm || {
+        echo -e "${YELLOW}npm installation failed. Frontend will not start.${NC}"
+        echo -e "${YELLOW}You can start it manually later with:${NC}"
+        echo -e "${YELLOW}  cd $FRONTEND_DIR && npm start${NC}"
+    }
 fi
 
 # Wait for frontend to start
