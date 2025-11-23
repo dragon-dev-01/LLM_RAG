@@ -82,24 +82,42 @@ if ! command -v docker &> /dev/null && ! docker --version &> /dev/null; then
     echo -e "${YELLOW}You may need to install Docker manually if MilvusDB fails to start${NC}"
 fi
 
-# Install Node.js 18+ (handle conflicts with old versions)
+# Install Node.js 18+ (handle conflicts with old versions and libnode-dev)
 echo -e "${YELLOW}Installing/Upgrading Node.js 18...${NC}"
 
 # Check current Node.js version
 CURRENT_NODE_VERSION=$(node -v 2>/dev/null | cut -d'v' -f2 | cut -d'.' -f1 || echo "0")
 
 if [ "$CURRENT_NODE_VERSION" -lt 18 ] 2>/dev/null || [ "$CURRENT_NODE_VERSION" = "0" ]; then
-    echo -e "${YELLOW}Removing old Node.js if exists...${NC}"
-    # Remove old nodejs and npm to avoid conflicts
-    apt-get remove -y nodejs npm 2>/dev/null || true
-    apt-get purge -y nodejs npm 2>/dev/null || true
+    echo -e "${YELLOW}Removing old Node.js and conflicting packages...${NC}"
+    # Remove old nodejs, npm, and libnode-dev to avoid conflicts
+    apt-get remove -y nodejs npm libnode-dev libnode72 2>/dev/null || true
+    apt-get purge -y nodejs npm libnode-dev libnode72 2>/dev/null || true
+    
+    # Force remove libnode-dev if it exists (this is the main conflict)
+    dpkg --remove --force-remove-reinstreq libnode-dev 2>/dev/null || true
+    dpkg --remove --force-remove-reinstreq libnode72 2>/dev/null || true
+    
+    # Fix any broken packages
+    apt-get install -f -y 2>/dev/null || true
+    apt-get autoremove -y 2>/dev/null || true
     
     echo -e "${YELLOW}Installing Node.js 18 from NodeSource...${NC}"
     curl -fsSL https://deb.nodesource.com/setup_18.x | bash - || true
-    apt-get install -y nodejs || {
-        echo -e "${YELLOW}NodeSource installation failed, trying Ubuntu repository...${NC}"
-        apt-get install -y nodejs npm || true
-    }
+    
+    # Try to install nodejs, handling any remaining conflicts
+    if ! apt-get install -y nodejs 2>&1; then
+        echo -e "${YELLOW}NodeSource installation had conflicts, force removing libnode-dev...${NC}"
+        # Force remove libnode-dev if it's still causing issues
+        dpkg --remove --force-remove-reinstreq libnode-dev 2>/dev/null || true
+        dpkg --remove --force-remove-reinstreq libnode72 2>/dev/null || true
+        apt-get install -f -y 2>/dev/null || true
+        # Try installing nodejs again with --force-yes
+        apt-get install -y --allow-downgrades --allow-remove-essential nodejs || {
+            echo -e "${YELLOW}NodeSource failed, trying Ubuntu repository...${NC}"
+            apt-get install -y nodejs npm || true
+        }
+    fi
 fi
 
 # Verify Node.js and npm are available
@@ -107,19 +125,20 @@ if command -v node &> /dev/null; then
     NODE_VER=$(node -v)
     echo -e "${GREEN}✓ Node.js installed: $NODE_VER${NC}"
     
-    # Check if npm is available
+    # Check if npm is available (Node.js 18+ includes npm)
     if ! command -v npm &> /dev/null; then
-        echo -e "${YELLOW}npm not found, installing...${NC}"
-        apt-get install -y npm || {
-            # If npm conflicts, try installing just npm
-            apt-get install -y --fix-broken npm || true
+        echo -e "${YELLOW}npm not found, Node.js 18 should include npm...${NC}"
+        # Try installing npm separately
+        apt-get install -y npm 2>/dev/null || {
+            echo -e "${YELLOW}npm installation failed, but Node.js is available${NC}"
         }
     fi
     
     if command -v npm &> /dev/null; then
         echo -e "${GREEN}✓ npm installed: $(npm -v)${NC}"
     else
-        echo -e "${YELLOW}⚠ npm installation had issues, but continuing...${NC}"
+        echo -e "${YELLOW}⚠ npm not found, but Node.js is installed${NC}"
+        echo -e "${YELLOW}  Frontend may not work without npm${NC}"
     fi
 else
     echo -e "${RED}✗ Node.js installation failed!${NC}"
@@ -313,6 +332,8 @@ REACT_APP_API_HOST=http://localhost:5000
 REACT_APP_BYPASS_LOGIN=true
 REACT_APP_GOOGLE_CLIENT_ID=
 PORT=3000
+HOST=0.0.0.0
+DANGEROUSLY_DISABLE_HOST_CHECK=true
 EOF
 
 # Step 9: Start backend in screen session
@@ -323,21 +344,32 @@ cd "$BACKEND_DIR"
 pkill -f gunicorn || true
 sleep 2
 
-# Start backend in screen (using full path to gunicorn)
-echo -e "${YELLOW}Starting backend server...${NC}"
-
-# Kill any existing gunicorn processes
-pkill -f gunicorn || true
-sleep 2
-
 # Ensure database exists before starting
 cd "$BACKEND_DIR"
 if [ ! -f "instance/llm_rag.db" ]; then
     echo -e "${YELLOW}Database not found, creating it now...${NC}"
     export DATABASE_URL=sqlite:///./instance/llm_rag.db
-    $VENV_PYTHON -c "from src import db, create_app; app = create_app(); app.app_context().push(); db.create_all()" 2>/dev/null || true
+    export MILVUS_HOST=localhost
+    export MILVUS_PORT=19530
+    export BYPASS_LOGIN=true
+    export FLASK_APP=app_new.py
+    $VENV_PYTHON -c "from src import db, create_app; app = create_app(); app.app_context().push(); db.create_all()" 2>&1 || {
+        echo -e "${YELLOW}Database creation had issues, but continuing...${NC}"
+        true
+    }
 fi
 
+# Verify database file exists
+if [ ! -f "instance/llm_rag.db" ]; then
+    echo -e "${RED}ERROR: Database file still not found after creation attempt!${NC}"
+    echo -e "${YELLOW}Creating database with direct SQLite command...${NC}"
+    mkdir -p instance
+    touch instance/llm_rag.db
+    chmod 644 instance/llm_rag.db
+fi
+
+# Start backend - ensure it binds to 0.0.0.0 for external access
+echo -e "${YELLOW}Starting Gunicorn on 0.0.0.0:5000...${NC}"
 screen -dmS llm-rag-backend bash -c "
     cd $BACKEND_DIR
     export DATABASE_URL=sqlite:///./instance/llm_rag.db
@@ -352,7 +384,14 @@ screen -dmS llm-rag-backend bash -c "
     export FLASK_APP=app_new.py
     $BACKEND_DIR/venv/bin/gunicorn -w 4 -b 0.0.0.0:5000 --timeout 300 --access-logfile - --error-logfile - app_new:app 2>&1 | tee /tmp/backend.log
 "
-echo -e "${GREEN}Backend started in screen session${NC}"
+sleep 3
+
+# Verify backend started
+if pgrep -f "gunicorn.*app_new:app" > /dev/null; then
+    echo -e "${GREEN}✓ Backend started successfully${NC}"
+else
+    echo -e "${RED}⚠ Backend may not have started, check logs: screen -r llm-rag-backend${NC}"
+fi
 
 # Wait for backend to start
 sleep 5
@@ -376,23 +415,56 @@ if command -v npm &> /dev/null; then
         echo "PORT=3000" >> .env
     fi
     
+    # Kill any existing node processes on port 3000
+    lsof -ti:3000 | xargs kill -9 2>/dev/null || true
+    sleep 1
+    
     screen -dmS llm-rag-frontend bash -c "
         cd $FRONTEND_DIR
         export REACT_APP_API_HOST=http://localhost:5000
         export REACT_APP_BYPASS_LOGIN=true
         export PORT=3000
-        BROWSER=none npm start 2>&1 | tee /tmp/frontend.log
+        export HOST=0.0.0.0
+        export DANGEROUSLY_DISABLE_HOST_CHECK=true
+        BROWSER=none HOST=0.0.0.0 PORT=3000 npm start 2>&1 | tee /tmp/frontend.log
     "
     echo -e "${GREEN}Frontend started in screen session${NC}"
     echo -e "${YELLOW}Note: Frontend may take 1-2 minutes to compile${NC}"
+    sleep 5
+    
+    # Verify frontend started
+    if pgrep -f "node.*react-scripts" > /dev/null || pgrep -f "npm start" > /dev/null; then
+        echo -e "${GREEN}✓ Frontend process started${NC}"
+    else
+        echo -e "${YELLOW}⚠ Frontend process may not have started yet, check logs: screen -r llm-rag-frontend${NC}"
+    fi
 else
     echo -e "${RED}ERROR: npm not found! Frontend cannot start.${NC}"
-    echo -e "${YELLOW}Attempting to install npm...${NC}"
-    apt-get install -y npm || {
+    echo -e "${YELLOW}Attempting to fix Node.js/npm installation...${NC}"
+    
+    # Try to fix by removing libnode-dev and reinstalling
+    apt-get remove -y libnode-dev libnode72 2>/dev/null || true
+    dpkg --remove --force-remove-reinstreq libnode-dev 2>/dev/null || true
+    apt-get install -f -y 2>/dev/null || true
+    
+    # Try installing npm again
+    if apt-get install -y npm 2>/dev/null; then
+        echo -e "${GREEN}npm installed, starting frontend...${NC}"
+        cd "$FRONTEND_DIR"
+        screen -dmS llm-rag-frontend bash -c "
+            cd $FRONTEND_DIR
+            export REACT_APP_API_HOST=http://localhost:5000
+            export REACT_APP_BYPASS_LOGIN=true
+            export PORT=3000
+            export HOST=0.0.0.0
+            export DANGEROUSLY_DISABLE_HOST_CHECK=true
+            BROWSER=none HOST=0.0.0.0 PORT=3000 DANGEROUSLY_DISABLE_HOST_CHECK=true npm start 2>&1 | tee /tmp/frontend.log
+        "
+    else
         echo -e "${YELLOW}npm installation failed. Frontend will not start.${NC}"
         echo -e "${YELLOW}You can start it manually later with:${NC}"
         echo -e "${YELLOW}  cd $FRONTEND_DIR && npm start${NC}"
-    }
+    fi
 fi
 
 # Wait for frontend to start
@@ -405,17 +477,47 @@ echo -e "${GREEN}Verifying services...${NC}"
 echo "=========================================="
 
 # Check backend
+echo -e "${YELLOW}Checking backend service...${NC}"
+sleep 2
 if curl -f http://localhost:5000/api/base-models &>/dev/null; then
-    echo -e "${GREEN}✓ Backend is running on port 5000${NC}"
+    echo -e "${GREEN}✓ Backend is running and responding on port 5000${NC}"
+elif pgrep -f "gunicorn.*app_new:app" > /dev/null; then
+    echo -e "${YELLOW}⚠ Backend process is running but not responding yet. It may need more time to start.${NC}"
+    echo -e "${YELLOW}  Check logs: screen -r llm-rag-backend${NC}"
 else
-    echo -e "${YELLOW}⚠ Backend may not be running. Check: screen -r llm-rag-backend${NC}"
+    echo -e "${RED}✗ Backend is not running!${NC}"
+    echo -e "${YELLOW}  Attempting to restart...${NC}"
+    cd "$BACKEND_DIR"
+    screen -dmS llm-rag-backend bash -c "
+        cd $BACKEND_DIR
+        export DATABASE_URL=sqlite:///./instance/llm_rag.db
+        export MILVUS_HOST=localhost
+        export MILVUS_PORT=19530
+        export BYPASS_LOGIN=true
+        export PORT=5000
+        export FLASK_APP=app_new.py
+        $BACKEND_DIR/venv/bin/gunicorn -w 4 -b 0.0.0.0:5000 --timeout 300 app_new:app
+    "
+    sleep 3
 fi
 
 # Check frontend
+echo -e "${YELLOW}Checking frontend service...${NC}"
+sleep 2
 if curl -f http://localhost:3000 &>/dev/null; then
-    echo -e "${GREEN}✓ Frontend is running on port 3000${NC}"
+    echo -e "${GREEN}✓ Frontend is running and responding on port 3000${NC}"
+elif pgrep -f "node.*react-scripts\|npm start" > /dev/null; then
+    echo -e "${YELLOW}⚠ Frontend process is running but not responding yet. It may still be compiling.${NC}"
+    echo -e "${YELLOW}  Check logs: screen -r llm-rag-frontend${NC}"
+    echo -e "${YELLOW}  Frontend compilation can take 2-5 minutes on first start${NC}"
 else
-    echo -e "${YELLOW}⚠ Frontend may not be running. Check: screen -r llm-rag-frontend${NC}"
+    echo -e "${YELLOW}⚠ Frontend is not running${NC}"
+    if command -v npm &> /dev/null; then
+        echo -e "${YELLOW}  npm is available, you can start frontend manually:${NC}"
+        echo -e "${YELLOW}    screen -dmS llm-rag-frontend bash -c 'cd $FRONTEND_DIR && BROWSER=none HOST=0.0.0.0 npm start'${NC}"
+    else
+        echo -e "${RED}  npm is not available, frontend cannot start${NC}"
+    fi
 fi
 
 # Check Milvus
@@ -423,6 +525,34 @@ if curl -f http://localhost:9091/healthz &>/dev/null; then
     echo -e "${GREEN}✓ MilvusDB is running${NC}"
 else
     echo -e "${YELLOW}⚠ MilvusDB may not be running${NC}"
+fi
+
+# Verify ports are listening
+echo -e "${YELLOW}Checking if ports are listening...${NC}"
+if command -v netstat &> /dev/null; then
+    if netstat -tlnp 2>/dev/null | grep -q ":5000 "; then
+        echo -e "${GREEN}✓ Port 5000 is listening${NC}"
+    else
+        echo -e "${RED}✗ Port 5000 is NOT listening${NC}"
+    fi
+    
+    if netstat -tlnp 2>/dev/null | grep -q ":3000 "; then
+        echo -e "${GREEN}✓ Port 3000 is listening${NC}"
+    else
+        echo -e "${YELLOW}⚠ Port 3000 is NOT listening (frontend may still be compiling)${NC}"
+    fi
+elif command -v ss &> /dev/null; then
+    if ss -tlnp 2>/dev/null | grep -q ":5000 "; then
+        echo -e "${GREEN}✓ Port 5000 is listening${NC}"
+    else
+        echo -e "${RED}✗ Port 5000 is NOT listening${NC}"
+    fi
+    
+    if ss -tlnp 2>/dev/null | grep -q ":3000 "; then
+        echo -e "${GREEN}✓ Port 3000 is listening${NC}"
+    else
+        echo -e "${YELLOW}⚠ Port 3000 is NOT listening (frontend may still be compiling)${NC}"
+    fi
 fi
 
 # Get external IP
@@ -458,9 +588,30 @@ echo "🧪 Test API (from your local machine):"
 echo "  curl http://${EXTERNAL_IP}:5000/api/base-models"
 echo ""
 echo "⚠️  IMPORTANT: If services are not accessible:"
-echo "  1. Check vast.ai port forwarding is enabled"
-echo "  2. Verify services are running: screen -r llm-rag-backend"
-echo "  3. Check firewall: ufw status"
+echo "  1. Check vast.ai port forwarding is enabled in template"
+echo "  2. Verify services are running:"
+echo "     • screen -r llm-rag-backend"
+echo "     • screen -r llm-rag-frontend"
+echo "  3. Check if ports are listening:"
+echo "     • netstat -tlnp | grep -E ':(5000|3000)'"
+echo "  4. Verify services bind to 0.0.0.0 (not localhost)"
+echo "  5. Check firewall: ufw status"
+echo ""
+echo "🔧 Troubleshooting Commands:"
+echo "  # Check backend logs"
+echo "  screen -r llm-rag-backend"
+echo ""
+echo "  # Check frontend logs"
+echo "  screen -r llm-rag-frontend"
+echo ""
+echo "  # Restart backend manually"
+echo "  cd /root/LLM_RAG/LLM-Finetuner-main"
+echo "  source venv/bin/activate"
+echo "  screen -dmS llm-rag-backend bash -c 'gunicorn -w 4 -b 0.0.0.0:5000 --timeout 300 app_new:app'"
+echo ""
+echo "  # Restart frontend manually (if npm is available)"
+echo "  cd /root/LLM_RAG/LLM-Finetuner-FE-main"
+echo "  screen -dmS llm-rag-frontend bash -c 'HOST=0.0.0.0 PORT=3000 BROWSER=none npm start'"
 echo ""
 echo "=========================================="
 echo ""
