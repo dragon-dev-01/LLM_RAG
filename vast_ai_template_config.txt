@@ -1,0 +1,41 @@
+# VAST.AI Template Configuration for LLM_RAG
+
+## Template Information
+Template Name: LLM_RAG Full Stack
+Template Description: Multi-tenant LLM Fine-tuning and RAG Platform with React Frontend and Flask Backend
+
+## VM Image Configuration
+VM Image Path: docker.io/vastai/kvm:@vastai-automatic-tag
+VM Version: @vastai-automatic-tag
+
+## Ports Configuration
+Port 3000: TCP (Frontend - React App)
+Port 5000: TCP (Backend - Flask API)
+Port 19530: TCP (Milvus Vector Database)
+Port 9091: TCP (Milvus Health Check)
+
+## Docker Options
+-e TZ=UTC -p 3000:3000 -p 5000:5000 -p 19530:19530 -p 9091:9091
+
+## Environment Variables
+DATABASE_URL=sqlite:///./llm_rag.db
+MILVUS_HOST=localhost
+MILVUS_PORT=19530
+BYPASS_LOGIN=true
+FLASK_DEBUG=0
+PORT=5000
+REACT_APP_API_HOST=http://localhost:5000
+REACT_APP_BYPASS_LOGIN=true
+
+## Launch Mode
+Interactive shell server, SSH
+
+## Disk Space
+Container Disk Size: 50 GB
+
+## Extra Filters
+vms_enabled=true
+
+## SSH Connection
+Use direct SSH connection: Yes
+
