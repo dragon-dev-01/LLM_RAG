@@ -171,16 +171,11 @@ cd $WORK_DIR/LLM-Finetuner-FE-main
 
 # Kill any existing frontend processes
 pkill -f "react-scripts" 2>/dev/null || true
-pkill -f "serve" 2>/dev/null || true
 sleep 2
 
 # Install npm dependencies
 print_status "Installing npm packages (this may take a few minutes)..."
 npm install --legacy-peer-deps
-
-# Install serve globally for production deployment option
-print_status "Installing serve package for production deployment..."
-npm install -g serve 2>/dev/null || true
 
 # Install speech-polyfill dependencies if needed
 if [ -d "src/vendor/speech-polyfill" ]; then
@@ -191,47 +186,38 @@ if [ -d "src/vendor/speech-polyfill" ]; then
     cd $WORK_DIR/LLM-Finetuner-FE-main
 fi
 
-# Create .env file for frontend build
+# Create .env file for frontend if it doesn't exist
 if [ ! -f ".env" ]; then
     cat > .env << EOF
 REACT_APP_API_HOST=http://localhost:5000
 REACT_APP_BYPASS_LOGIN=true
 REACT_APP_GOOGLE_CLIENT_ID=
+PORT=3000
+HOST=0.0.0.0
+DANGEROUSLY_DISABLE_HOST_CHECK=true
 EOF
 fi
 
-# Install serve package for production deployment
-print_status "Installing serve package for production deployment..."
-npm install -g serve 2>/dev/null || true
+# Modify package.json to ensure React binds to 0.0.0.0
+print_status "Configuring React to bind to 0.0.0.0 for external access..."
+sed -i 's/"start": "react-scripts start"/"start": "HOST=0.0.0.0 DANGEROUSLY_DISABLE_HOST_CHECK=true PORT=3000 react-scripts start"/' package.json 2>/dev/null || true
 
-# Build React app for production (more reliable for external access)
-print_status "Building React app for production..."
-npm run build
-
-if [ ! -d "build" ]; then
-    print_error "Build failed! Falling back to dev server..."
-    # Fallback to dev server
-    export PORT=3000
-    export HOST=0.0.0.0
-    export HOSTNAME=0.0.0.0
-    export DANGEROUSLY_DISABLE_HOST_CHECK=true
-    export BROWSER=none
-    nohup env HOST=0.0.0.0 HOSTNAME=0.0.0.0 DANGEROUSLY_DISABLE_HOST_CHECK=true PORT=3000 BROWSER=none npm start > /root/frontend.log 2>&1 &
-    FRONTEND_PID=$!
-else
-    print_status "Production build successful! Starting server..."
-    # Serve production build
-    nohup serve -s build -l 3000 --host 0.0.0.0 > /root/frontend.log 2>&1 &
-    FRONTEND_PID=$!
-fi
-
+# Start frontend with proper environment variables
+print_status "Starting frontend server (binding to 0.0.0.0:3000)..."
+export PORT=3000
+export HOST=0.0.0.0
+export HOSTNAME=0.0.0.0
+export DANGEROUSLY_DISABLE_HOST_CHECK=true
+export BROWSER=none
+nohup env HOST=0.0.0.0 HOSTNAME=0.0.0.0 DANGEROUSLY_DISABLE_HOST_CHECK=true PORT=3000 BROWSER=none npm start > /root/frontend.log 2>&1 &
+FRONTEND_PID=$!
 echo $FRONTEND_PID > /root/frontend.pid
 
 # Wait for frontend to start
-print_status "Waiting for frontend to start..."
-sleep 5
+print_status "Waiting for frontend to start (this may take 1-2 minutes for first build)..."
+sleep 15
 FRONTEND_READY=false
-for i in {1..30}; do
+for i in {1..60}; do
     # Check if port is listening on 0.0.0.0 (most important for external access)
     if netstat -tuln 2>/dev/null | grep -q "0.0.0.0:3000" || ss -tuln 2>/dev/null | grep -q ":3000"; then
         print_status "Frontend is running on 0.0.0.0:3000!"
@@ -297,4 +283,5 @@ echo "  - Frontend: kill \$(cat /root/frontend.pid)"
 echo "  - Milvus: cd LLM-Finetuner-main && docker-compose down"
 echo ""
 echo "=========================================="
+
 
