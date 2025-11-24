@@ -117,7 +117,27 @@ done
 # Install Python dependencies
 print_status "Installing Python dependencies..."
 pip3 install --upgrade pip -q
-pip3 install -r requirements.txt -q
+
+# Fix blinker issue by using --ignore-installed or --break-system-packages
+print_status "Installing Python packages (fixing blinker conflict)..."
+# Try with --ignore-installed first
+pip3 install --ignore-installed blinker -q 2>/dev/null || true
+
+# Install requirements with workaround for blinker
+pip3 install -r requirements.txt --ignore-installed blinker -q 2>&1 | grep -v "WARNING" || {
+    print_warning "Standard install had issues, trying alternative method..."
+    # Try with --break-system-packages (for newer pip)
+    pip3 install -r requirements.txt --break-system-packages -q 2>&1 | grep -v "WARNING" || {
+        print_warning "Some packages may have failed, but continuing..."
+    }
+}
+
+# Verify Flask is installed before proceeding
+print_status "Verifying Flask installation..."
+if ! python3 -c "import flask" 2>/dev/null; then
+    print_error "Flask not installed! Attempting to install Flask directly..."
+    pip3 install flask flask-sqlalchemy flask-migrate flask-cors --ignore-installed blinker -q || pip3 install flask flask-sqlalchemy flask-migrate flask-cors --break-system-packages -q || true
+fi
 
 # Run database migrations
 print_status "Setting up database..."
@@ -141,13 +161,19 @@ mkdir -p uploads adapters logs instance
 print_status "Starting backend server..."
 cd $WORK_DIR/LLM-Finetuner-main
 
-# Kill any existing backend processes
-pkill -f "app_new.py" 2>/dev/null || true
-sleep 2
+# Verify Flask is available before starting
+if ! python3 -c "import flask" 2>/dev/null; then
+    print_error "Flask is not installed! Cannot start backend."
+    print_warning "Backend will not start. Check Python dependencies installation."
+else
+    # Kill any existing backend processes
+    pkill -f "app_new.py" 2>/dev/null || true
+    sleep 2
 
-nohup python3 app_new.py > /root/backend.log 2>&1 &
-BACKEND_PID=$!
-echo $BACKEND_PID > /root/backend.pid
+    nohup python3 app_new.py > /root/backend.log 2>&1 &
+    BACKEND_PID=$!
+    echo $BACKEND_PID > /root/backend.pid
+fi
 
 # Wait for backend to start
 print_status "Waiting for backend to start..."
@@ -181,8 +207,17 @@ npm install --legacy-peer-deps
 if [ -d "src/vendor/speech-polyfill" ]; then
     print_status "Installing speech-polyfill dependencies..."
     cd src/vendor/speech-polyfill
+    
     npm install --legacy-peer-deps
-    npm run build 2>/dev/null || true
+    
+    # Fix OpenSSL/webpack issue with Node.js 18 by using legacy provider
+    # This is a known issue: Node.js 17+ uses OpenSSL 3.0 which breaks old webpack
+    print_status "Building speech-polyfill (using OpenSSL legacy provider)..."
+    export NODE_OPTIONS="--openssl-legacy-provider"
+    NODE_OPTIONS="--openssl-legacy-provider" npm run build 2>&1 | grep -v "WARNING" || {
+        print_warning "Speech-polyfill build failed (non-critical - app will work without it)..."
+        print_warning "This is due to OpenSSL compatibility with old webpack. Continuing..."
+    }
     cd $WORK_DIR/LLM-Finetuner-FE-main
 fi
 
